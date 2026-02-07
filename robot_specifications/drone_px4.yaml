@@ -8,19 +8,27 @@ prompts: |
   Use the `drone_control` actions for all movements.
   
   Available Actions:
+  
   1. Takeoff (Type: `drone_interfaces/action/DroneTakeoff`)
-     - Action Server: `/drone_control/takeoff` (Note: Actions use Goal/Result/Feedback)
-     - Goal: `{target_altitude: float}`
+     - Action Server: `/drone_control/takeoff`
+     - Goal: `float32 target_altitude`
      - Example: "Takeoff to 5 meters"
   
   2. Navigation (Type: `drone_interfaces/action/DroneNavigate`)
      - Action Server: `/drone_control/navigate`
-     - Goal: `{x: float, y: float, z: float, relative: bool}`
+     - Goal: 
+       - `float32 x`
+       - `float32 y`
+       - `float32 z`
+       - `bool relative` (True = relative to body frame, False = global map frame)
      - Example: "Fly to 10, 10, 5", "Move forward 5 meters (relative=True)"
   
   3. Orbit (Type: `drone_interfaces/action/DroneOrbit`)
      - Action Server: `/drone_control/orbit`
-     - Goal: `{radius: float, altitude: float, speed: float}`
+     - Goal:
+       - `float32 radius`
+       - `float32 altitude`
+       - `float32 speed` (radians/s)
      - Example: "Orbit at 5m radius, altitude 10m"
   
   Safety:
