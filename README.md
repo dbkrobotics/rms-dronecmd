@@ -1,4 +1,4 @@
-# RMS Drone Command (Action Server Refactor)
+# Example - Drone Control
 
 ## Prerequisites Installation
 
