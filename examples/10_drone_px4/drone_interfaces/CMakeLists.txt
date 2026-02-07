@@ -12,10 +12,13 @@ find_package(rosidl_default_generators REQUIRED)
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
+find_package(action_msgs REQUIRED)
+
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/DroneTakeoff.action"
   "action/DroneNavigate.action"
   "action/DroneOrbit.action"
+  DEPENDENCIES action_msgs
 )
 
 if(BUILD_TESTING)
