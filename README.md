@@ -1,69 +1,64 @@
+# RMS Drone Command (Action Server Refactor)
 
-1. ROS2 PX4 User guide: https://docs.px4.io/main/en/ros2/user_guide
+This repository provides a ROS2-based drone controller using **Actions** to communicate with PX4 Autopilot via MAVROS.
 
-Installation of PX4 stacks
-Open Terminal
-- cd
-- git clone https://github.com/PX4/PX4-Autopilot.git --recursive
-- bash ./PX4-Autopilot/Tools/setup/ubuntu.sh
-- cd PX4-Autopilot/
-- make px4_sitl
+## Prerequisites
 
-Run gazebo simulation to verify installation
-- cd PX4-Autopilot/
-- make px4_sitl gz_x500
+1.  **ROS2 Jazzy** (or Humble/Rolling)
+2.  **PX4 Autopilot** (for SITL simulation)
+3.  **MAVROS** (`ros-jazzy-mavros`)
+4.  **QGroundControl** (Optional, for monitoring)
 
+## Installation
 
-2. ROS2 Jazzy MAVROS guide: https://docs.ros.org/en/jazzy/p/mavros/
+```bash
+# 1. Clone the repository into your workspace src/
+cd ~/ros2_ws/src
+git clone https://github.com/dbkrobotics/rms-dronecmd.git
 
-Open Terminal
-- cd
-- sudo apt install ros-jazzy-mavros
-- wget https://raw.githubusercontent.com/mavlink/mavros/ros2/mavros/scripts/install_geographiclib_datasets.sh
-- sudo bash ./install_geographiclib_datasets.sh
+# 2. Build the packages
+cd ~/ros2_ws
+colcon build --packages-select drone_interfaces drone_controller
 
+# 3. Source the setup script
+source install/setup.bash
+```
 
+## Usage
 
-3. QGC Installation: https://docs.qgroundcontrol.com/master/en/qgc-user-guide/getting_started/download_and_install.html
+### Simulation (SITL)
 
-Open Terminal
-- sudo usermod -a -G dialout $USER
-- sudo apt-get remove modemmanager -y
-- sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl -y
-- sudo apt install libfuse2 -y
-- sudo apt install libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor-dev -y
-- Download QGC: https://d176tv9ibo4jno.cloudfront.net/latest/QGroundControl-x86_64.AppImage
-- cd {$download folder}
-- chmod +x ./QGroundControl-x86_64.AppImage
-- ./QGroundControl-x86_64.AppImage
+1.  **Start PX4 SITL** (Terminal 1):
+    ```bash
+    cd ~/PX4-Autopilot
+    make px4_sitl gz_x500
+    ```
 
-4. DBK drone code for extra node (/drone/cmd)
-- clone rms-dronecmd in your ROS2 workspace's src folder
-- cd {$ROS2 workspace}
-- colcon build
-- source install/setup.bash
+2.  **Start Drone Controller** (Terminal 2):
+    ```bash
+    ros2 launch drone_controller sitl.launch.py
+    ```
 
-5.Operational Procedure 
+### Real Hardware
 
-Terminal 1
-- cd PX4-AutoPilot
-- make px4_sitl gz_x500
+1.  **Start Drone Controller** (Terminal 1):
+    ```bash
+    # Ensure your FCU is connected via UART/Serial
+    ros2 launch drone_controller real.launch.py
+    ```
 
-Terminal 2
-- cd {$download folder}
-- ./QGroundControl-x86_64.AppImage
+## Control Interfaces (ROS2 Actions)
 
-Terminal 3
-- ros2 launch mavros px4.launch fcu_url:="udp://:14540@127.0.0.1:14557"
+The controller now exposes **Actions** instead of Services for better feedback and control.
 
-Terminal 4
--ros2 launch rosbridge_server rosbridge_websocket_launch.xml 
+| Action Topic | Type | Description |
+| :--- | :--- | :--- |
+| `/drone_control/takeoff` | `DroneTakeoff` | Takeoff to a specific altitude. |
+| `/drone_control/navigate` | `DroneNavigate` | Fly to (x, y, z) coordinates. |
+| `/drone_control/orbit` | `DroneOrbit` | Orbit around a center point. |
 
-Terminal 5
-- ros2 run drone_controller bridge
+### Example CLI Verification
 
-Terminal 6
-- gemini
-- Prompt in the beginning
-- Connect the drone on localhost and list all ros topics and services   
-- Use drone/cmd service for hover,takeoff, navigation, and pattern flight and use mavros for others      
+```bash
+ros2 action send_goal /drone_control/takeoff drone_interfaces/action/DroneTakeoff "{target_altitude: 5.0}"
+```

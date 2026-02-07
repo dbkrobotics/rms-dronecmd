@@ -233,15 +233,4 @@ def main():
     finally:
         node.destroy_node()
         rclpy.shutdown()
-def main():
-    rclpy.init()
-    node = DroneMCPBridge()
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
-    try:
-        executor.spin()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+
