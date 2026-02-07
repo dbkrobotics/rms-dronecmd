@@ -13,10 +13,9 @@ find_package(rosidl_default_generators REQUIRED)
 # find_package(<dependency> REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/Hover.srv"
-  "srv/Navigate.srv"
-  "srv/Pattern.srv"
-  "srv/DroneCommand.srv"
+  "action/DroneTakeoff.action"
+  "action/DroneNavigate.action"
+  "action/DroneOrbit.action"
 )
 
 if(BUILD_TESTING)

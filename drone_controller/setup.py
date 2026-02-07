@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-        'bridge = drone_controller.drone_controller_node:main',
+            'bridge = drone_controller.drone_controller_node:main',
         ],
     },
 )
