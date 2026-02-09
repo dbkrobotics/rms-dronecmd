@@ -9,7 +9,7 @@ from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, SetMode
 
-from drone_interfaces.action import DroneTakeoff, DroneNavigate, DroneOrbit
+from drone_interfaces.action import DroneTakeoff, DroneNavigate, DroneOrbit, DroneTrajectory
 
 import math
 import time
@@ -39,6 +39,10 @@ class DroneMCPBridge(Node):
         self._action_orbit = ActionServer(
             self, DroneOrbit, 'drone_control/orbit', 
             self.execute_orbit, callback_group=self.callback_group)
+
+        self._action_trajectory = ActionServer(
+            self, DroneTrajectory, 'drone_control/trajectory',
+            self.execute_trajectory, callback_group=self.callback_group)
 
         self.current_state = State()
         self.current_pose = PoseStamped()
@@ -221,6 +225,87 @@ class DroneMCPBridge(Node):
         goal_handle.abort()
         return DroneOrbit.Result(success=False, message="Node shutdown")
 
+    async def execute_trajectory(self, goal_handle):
+        req = goal_handle.request
+        self.get_logger().info(f'Executing Trajectory with {len(req.points)} points. Frame={req.reference_frame}, Yaw={req.yaw_mode}, FlyThrough={req.fly_through}')
+
+        if not await self.prepare_for_flight():
+            goal_handle.abort()
+            return DroneTrajectory.Result(success=False, message="Failed to arm/offboard")
+
+        self.active_pattern = None 
+        
+        # Transform points
+        # reference_frame: 0 = RELATIVE_TO_START, 1 = LOCAL_NED
+        points = []
+        if req.reference_frame == 0:
+            start_x = self.current_pose.pose.position.x
+            start_y = self.current_pose.pose.position.y
+            start_z = self.current_pose.pose.position.z 
+            for p in req.points:
+                points.append((start_x + p.x, start_y + p.y, start_z + p.z))
+        else:
+            for p in req.points:
+                points.append((p.x, p.y, p.z))
+
+        loops = req.repeat + 1
+        current_global_idx = 0
+        
+        feedback_msg = DroneTrajectory.Feedback()
+
+        for loop_idx in range(loops):
+            for i, (tx, ty, tz) in enumerate(points):
+                if goal_handle.is_cancel_requested:
+                    goal_handle.canceled()
+                    return DroneTrajectory.Result(success=False, message="Canceled")
+
+                self.target_pose.pose.position.x = float(tx)
+                self.target_pose.pose.position.y = float(ty)
+                self.target_pose.pose.position.z = float(tz)
+                
+                # Yaw Handling (Simple Face-Target)
+                if req.yaw_mode == 0: # FACE_PATH
+                     dx = tx - self.current_pose.pose.position.x
+                     dy = ty - self.current_pose.pose.position.y
+                     if abs(dx) > 0.1 or abs(dy) > 0.1:
+                        yaw = math.atan2(dy, dx)
+                        # Minimal quaternion conversion (z-axis rotation only)
+                        # q = [0, 0, sin(yaw/2), cos(yaw/2)]
+                        self.target_pose.pose.orientation.z = math.sin(yaw / 2.0)
+                        self.target_pose.pose.orientation.w = math.cos(yaw / 2.0)
+                        self.target_pose.pose.orientation.x = 0.0
+                        self.target_pose.pose.orientation.y = 0.0
+
+                while rclpy.ok():
+                    if goal_handle.is_cancel_requested:
+                        goal_handle.canceled()
+                        return DroneTrajectory.Result(success=False, message="Canceled")
+
+                    cx = self.current_pose.pose.position.x
+                    cy = self.current_pose.pose.position.y
+                    cz = self.current_pose.pose.position.z
+                    
+                    dist = math.sqrt((tx-cx)**2 + (ty-cy)**2 + (tz-cz)**2)
+                    
+                    feedback_msg.current_point_index = current_global_idx
+                    feedback_msg.distance_remaining = dist
+                    goal_handle.publish_feedback(feedback_msg)
+
+                    tolerance = req.tolerance if req.tolerance > 0.0 else 0.2
+                    
+                    if dist < tolerance:
+                        break 
+                    
+                    time.sleep(0.1)
+                
+                if not req.fly_through:
+                    time.sleep(1.0)
+                
+                current_global_idx += 1
+
+        goal_handle.succeed()
+        return DroneTrajectory.Result(success=True, message="Trajectory complete")
+
 def main():
     rclpy.init()
     node = DroneMCPBridge()
@@ -233,4 +318,3 @@ def main():
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
