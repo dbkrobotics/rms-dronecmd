@@ -98,12 +98,13 @@ ros2 run drone_controller bridge
 
 **Terminal 6: Gemini / MCP Client**
 1.  Run `gemini` (or your MCP client).
-2.  **Prompt:** "I am controlling a drone_px4. Connect to localhost."
-3.  Gemini will list topics/services.
-4.  **Usage:**
-    -   "Takeoff to 5 meters" (Uses `DroneTakeoff` action)
-    -   "Fly to 10, 10, 5" (Uses `DroneNavigate` action)
-    -   "Orbit at 5m radius" (Uses `DroneOrbit` action)
+2.  **Prompt:** "I am controlling a drone_px4. Connect to localhost and load the drone_px4 robot configuration."
+3.  **Usage:**
+    -   "Takeoff to 10 meters"
+    -   "Go to 30, 30, 30"
+    -   "Fly square pattern (Side length 10m)"
+    -   "Orbit at 10m radius"
+    -   "Return to launch" (Lands at home)
 
 ---
 
@@ -111,14 +112,23 @@ ros2 run drone_controller bridge
 
 The `drone_controller` node exposes these high-level actions:
 
+### **Features**
+-   **Smoothed 50Hz Control Loop**: Updates at 50Hz for responsive control.
+-   **Setpoint Interpolation**: "Carrot-following" logic eliminates jerkiness by moving a virtual setpoint at constant speed.
+-   **Fly Through Mode**: Smoothly transitions between waypoints without stopping.
+
+### **Actions**
+
 1.  **Takeoff** (`drone_interfaces/action/DroneTakeoff`)
     -   Server: `/drone_control/takeoff`
     -   Goal: `float32 target_altitude`
 
-2.  **Navigation** (`drone_interfaces/action/DroneNavigate`)
-    -   Server: `/drone_control/navigate`
-    -   Goal: `x, y, z` (float32), `relative` (bool)
+2.  **Trajectory** (`drone_interfaces/action/DroneTrajectory`)
+    -   Server: `/drone_control/trajectory`
+    -   Goal: 
+        -   `geometry_msgs/Point[] points`
+        -   `float32 speed` (m/s, default 1.0)
+        -   `float32 tolerance` (Arrival radius)
+        -   `bool fly_through` (True = Continuous motion)
+        -   `int32 repeat`
 
-3.  **Orbit** (`drone_interfaces/action/DroneOrbit`)
-    -   Server: `/drone_control/orbit`
-    -   Goal: `radius`, `altitude`, `speed`

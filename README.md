@@ -7,7 +7,7 @@ It is structured as a standalone example that can be merged into `robotmcp/ros-m
 
 - `robot_specifications/`: Contains the LLM context for the drone.
 - `examples/10_drone_px4/`: Contains the source code.
-  - `drone_interfaces`: Custom definitions for Takeoff, Navigate, Orbit Actions.
+  - `drone_interfaces`: Custom definitions for Takeoff and Trajectory Actions.
   - `drone_controller`: The Bridge Node implementing safety logic.
 
 ## Usage

@@ -1,8 +1,0 @@
-float32 radius
-float32 altitude
-float32 speed
----
-bool success
-string message
----
-float32 current_angle
