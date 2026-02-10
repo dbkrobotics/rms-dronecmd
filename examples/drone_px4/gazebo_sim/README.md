@@ -1,4 +1,4 @@
-# Example 10: PX4 Drone with MCP
+# PX4 Drone Control (Gazebo Simulation)
 
 This example demonstrates how to control a PX4-based drone using the MCP Server and custom ROS 2 Actions.
 
@@ -54,9 +54,8 @@ chmod +x ./QGroundControl-x86_64.AppImage
 ### 1d. Install This Package (rms-dronecmd)
 **Open Terminal:**
 ```bash
-# Assuming you cloned this repo into your ROS2 workspace src/
-cd ~/ros2_ws
-colcon build --packages-select drone_interfaces drone_controller
+cd examples/drone_px4/gazebo_sim/drone_ws
+colcon build --symlink-install
 source install/setup.bash
 ```
 
