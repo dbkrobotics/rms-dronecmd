@@ -6,10 +6,11 @@ It is structured as a standalone example that can be merged into `robotmcp/ros-m
 ## Directory Structure
 
 - `robot_specifications/`: Contains the LLM context for the drone.
-- `examples/10_drone_px4/`: Contains the source code.
-  - `drone_interfaces`: Custom definitions for Takeoff and Trajectory Actions.
-  - `drone_controller`: The Bridge Node implementing safety logic.
+- `examples/drone_px4/`: Contains the source code and documentation.
+  - `gazebo_sim`: Simulation setup and workspace (including `drone_interfaces` and `drone_controller`).
+  - `real_robot`: Placeholder for real robot setup.
+  - `images`: Screenshots and diagrams.
 
 ## Usage
 
-See [examples/10_drone_px4/README.md](examples/10_drone_px4/README.md) for detailed instructions.
+See [examples/drone_px4/gazebo_sim/README.md](examples/drone_px4/gazebo_sim/README.md) for detailed instructions on running the simulation.
