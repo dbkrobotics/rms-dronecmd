@@ -12,6 +12,7 @@ Official Guide: [PX4 User Guide](https://docs.px4.io/main/en/ros2/user_guide)
 cd ~
 git clone https://github.com/PX4/PX4-Autopilot.git --recursive
 bash ./PX4-Autopilot/Tools/setup/ubuntu.sh
+# You may need to logout and login again after the setup script finishes
 cd PX4-Autopilot/
 make px4_sitl
 ```
@@ -44,8 +45,8 @@ sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl -y
 sudo apt install libfuse2 -y
 sudo apt install libxcb-xinerama0 libxkbcommon-x11-0 libxcb-cursor-dev -y
 
-# Download and run QGC
-cd ~/Downloads  # Or your preferred download folder
+# Download and run QGC (change directory to where you want to download)
+cd ~/Downloads
 wget https://d176tv9ibo4jno.cloudfront.net/latest/QGroundControl-x86_64.AppImage
 chmod +x ./QGroundControl-x86_64.AppImage
 ./QGroundControl-x86_64.AppImage
@@ -59,7 +60,6 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
----
 
 ## 2. Operational Procedure
 
@@ -73,6 +73,7 @@ make px4_sitl gz_x500
 
 **Terminal 2: QGroundControl**
 ```bash
+# Navigate to where you downloaded QGC
 cd ~/Downloads
 ./QGroundControl-x86_64.AppImage
 ```
@@ -80,18 +81,22 @@ cd ~/Downloads
 **Terminal 3: MAVROS Bridge**
 ```bash
 # Connects ROS2 to the PX4 SITL simulation
+source /opt/ros/jazzy/setup.bash
 ros2 launch mavros px4.launch fcu_url:="udp://:14540@127.0.0.1:14557"
 ```
 
 **Terminal 4: ROS Bridge Server**
 ```bash
 # Allows MCP (Gemini) to talk to ROS
+source /opt/ros/jazzy/setup.bash
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml 
 ```
 
 **Terminal 5: Drone Controller Node**
 ```bash
 # Runs the custom bridge node that handles safety & high-level actions
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
 ros2 run drone_controller bridge
 ```
 
