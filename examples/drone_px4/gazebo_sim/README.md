@@ -1,13 +1,13 @@
 # Example - PX4 Drone (Gazebo Sim)
 ![Static Badge](https://img.shields.io/badge/ROS2-Available-green)
 
-Here is an introduction to the ROS MCP server’s capabilities using **Gazebo** with the **PX4 Autopilot** drone simulation!
+This is an example of ROS MCP server’s capabilities using **Gazebo** with the **PX4 Autopilot** drone simulation.
 
 This example demonstrates how to control a PX4-based drone using the MCP Server and custom ROS 2 Actions.
 
 ## System Requirements
 This example requires a PC capable of running Gazebo and PX4 SITL.
-- **OS**: Ubuntu 24.04 (Noble Numbat)
+- **OS**: Ubuntu 24.04
 - **ROS2**: Jazzy Jalisco
 - **Simulator**: Gazebo (Harmonic/Garden as used by PX4)
 
