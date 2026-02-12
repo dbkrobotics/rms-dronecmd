@@ -136,9 +136,18 @@
             };
 
             recognition.onend = () => {
+                log("Recognition ended");
                 if (isListening) {
                     // Auto-restart if it stopped but we want to keep listening
-                    recognition.start(); 
+                    // Add a small delay to avoid browser throttling
+                    setTimeout(() => {
+                        try {
+                            recognition.start();
+                            log("Restarting recognition...");
+                        } catch (e) {
+                            log(`Restart error: ${e.message}`);
+                        }
+                    }, 300);
                 } else {
                     statusEl.textContent = "Stopped";
                     statusEl.style.color = "var(--text-color)";
