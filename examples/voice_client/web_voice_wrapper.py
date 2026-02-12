@@ -45,7 +45,11 @@ class WebVoiceWrapper:
                     console.print(f"[dim]{text}[/dim]")
                     # Emit to server for TTS
                     # We use create_task because this is called from add_reader callback
-                    asyncio.create_task(self.sio.emit('bot_output', text))
+                    
+                    # Strip ANSI codes for TTS
+                    clean_text = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text)
+                    if clean_text.strip():
+                        asyncio.create_task(self.sio.emit('bot_output', clean_text.strip()))
         except OSError:
             pass
 
