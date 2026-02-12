@@ -40,94 +40,99 @@
         }
 
         h1 {
-            margin-bottom: 0.5rem;
-            font-weight: 700;
-            background: linear-gradient(to right, #60a5fa, #a78bfa);
+            margin-bottom: 2rem;
+            font-size: 2.5rem;
+            font-weight: 800;
+            letter-spacing: -0.05em;
+            background: linear-gradient(to right, #60a5fa, #c084fc);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
         #status {
-            font-size: 1.25rem;
+            font-size: 1.5rem;
             margin-bottom: 2rem;
-            font-weight: 500;
+            font-weight: 600;
             color: var(--accent-color);
-            min-height: 1.5em; /* Prevent layout shift */
+            min-height: 1.5em;
         }
 
         .visualizer {
             width: 100%;
-            height: 60px;
+            height: 80px;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 4px;
-            margin-bottom: 2rem;
+            gap: 6px;
+            margin-bottom: 3rem;
         }
 
         .bar {
-            width: 6px;
-            height: 10px;
+            width: 8px;
+            height: 12px;
             background-color: var(--accent-color);
-            border-radius: 3px;
+            border-radius: 4px;
             transition: height 0.1s ease;
         }
 
-        .bar.active {
-            animation: pulse 0.5s infinite alternate;
-        }
-
         @keyframes pulse {
-            0% { height: 10px; opacity: 0.5; }
-            100% { height: 40px; opacity: 1; }
+            0% { height: 12px; opacity: 0.5; }
+            100% { height: 60px; opacity: 1; }
         }
 
         #transcript {
-            font-size: 1.1rem;
-            line-height: 1.6;
-            margin-bottom: 1.5rem;
-            min-height: 3em;
-            color: #cbd5e1;
+            font-size: 2rem; /* Much larger */
+            font-weight: 500;
+            line-height: 1.4;
+            margin-bottom: 3rem;
+            min-height: 2em;
+            color: #f1f5f9;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
 
         .controls {
             display: flex;
-            gap: 1rem;
+            gap: 1.5rem; /* More space */
             justify-content: center;
+            margin-bottom: 2rem;
         }
 
         button {
-            background-color: var(--secondary-bg);
-            color: var(--text-color);
-            border: 1px solid var(--accent-color);
-            padding: 0.75rem 1.5rem;
-            border-radius: 0.5rem;
+            padding: 1rem 2.5rem; /* Larger buttons */
+            font-size: 1.1rem; 
+            border-radius: 0.75rem;
             cursor: pointer;
-            font-weight: 600;
-            transition: all 0.2s;
+            font-weight: 700;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            background-color: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
         }
 
         button:hover {
-            background-color: var(--accent-color);
-            color: white;
+            background-color: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
         }
 
         button.active {
             background-color: var(--error-color);
             border-color: var(--error-color);
-            color: white;
+            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
         }
         
         .log-container {
-            margin-top: 2rem;
+            width: 100%;
             text-align: left;
-            font-family: monospace;
-            font-size: 0.85rem;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.9rem;
             color: #94a3b8;
-            max-height: 100px;
+            height: 150px;
             overflow-y: auto;
-            border-top: 1px solid rgba(255,255,255,0.1);
-            padding-top: 1rem;
+            background-color: rgba(0, 0, 0, 0.3);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
         }
 
     </style>

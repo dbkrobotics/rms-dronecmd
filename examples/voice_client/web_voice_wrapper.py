@@ -117,7 +117,8 @@ class WebVoiceWrapper:
             stdin=slave,
             stdout=slave,
             stderr=slave,
-            preexec_fn=os.setsid 
+            preexec_fn=os.setsid, # Create new session
+            env=os.environ.copy() # Inherit environment (PATH, etc)
         )
         os.close(slave)
 
