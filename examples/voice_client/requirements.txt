@@ -1,7 +1,5 @@
 fastapi
 uvicorn
 python-socketio
-google-generativeai
-mcp
 rich
 aiohttp
