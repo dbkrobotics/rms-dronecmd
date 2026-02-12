@@ -2,46 +2,60 @@ import os
 import sys
 import asyncio
 import time
+import ctypes
+from contextlib import contextmanager
 from typing import Optional
 
 # Third-party libraries
 import speech_recognition as sr
-from gtts import gTTS, gTTSError
-from pydantic import BaseModel
+from gtts import gTTS
 import google.generativeai as genai
 from rich.console import Console
-from rich.panel import Panel
-from rich.live import Live
-from rich.text import Text
 from rich.spinner import Spinner
+from rich.live import Live
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # -- Configuration --
 API_KEY = os.getenv("GOOGLE_API_KEY")
-# Default assumption: mcp-ros-server is a sibling directory or provided via env
 MCP_SERVER_DIR = os.getenv("MCP_SERVER_PATH", os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../mcp-ros-server")))
-MCP_SERVER_SCRIPT = os.path.join(MCP_SERVER_DIR, "server.py")
 
 # -- UI Setup --
 console = Console()
 
+# Context manager to suppress C-level stderr (ALSA warnings)
+@contextmanager
+def ignore_stderr():
+    ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+    def py_error_handler(filename, line, function, err, fmt):
+        pass
+    c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
+    try:
+        asound = ctypes.cdll.LoadLibrary('libasound.so')
+        asound.snd_lib_error_set_handler(c_error_handler)
+        yield
+        asound.snd_lib_error_set_handler(None)
+    except OSError:
+        # ALSA not present or Linux not used, just yield
+        yield
+
 class VoiceClient:
     def __init__(self):
         self.recognizer = sr.Recognizer()
-        self.microphone = sr.Microphone()
         
-        # Adjust recognizer settings for responsiveness
-        self.recognizer.energy_threshold = 300  # Lower default threshold
+        with ignore_stderr():
+            self.microphone = sr.Microphone()
+        
+        self.recognizer.energy_threshold = 300
         self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.pause_threshold = 0.8   # Faster end-of-speech detection
+        self.recognizer.pause_threshold = 0.8
         
         if not API_KEY:
             console.print("[bold red]Error:[/bold red] GOOGLE_API_KEY not found.")
             sys.exit(1)
             
         genai.configure(api_key=API_KEY)
-        self.model = None # Initialized later with tools
+        self.model = None
         self.chat = None
 
     def speak(self, text: str):
@@ -58,8 +72,7 @@ class VoiceClient:
             if sys.platform == "darwin":
                 os.system(f"afplay {filename}")
             else:
-                # Fallback or other OS
-                os.system(f"mpg123 {filename}") 
+                os.system(f"mpg123 -q {filename}") 
             if os.path.exists(filename):
                 os.remove(filename)
         except Exception as e:
