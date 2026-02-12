@@ -80,17 +80,40 @@ class WebVoiceWrapper:
                 
                 clean_chunk = text_chunk.strip()
                 
-                # Heuristic: Only speak if it looks like real text
-                # Ignore chunks that are just punctuation or very short status updates
-                if clean_chunk and any(c.isalpha() for c in clean_chunk):
-                     # Avoid speaking repeated prompt characters like ">" or "|"
-                    if not re.match(r'^[\s\W_]+$', clean_chunk):
-                        self.tts_buffer += " " + clean_chunk
-                        
-                        # Debounce/Batch TTS sending
-                        if self.tts_timer:
-                            self.tts_timer.cancel()
-                        self.tts_timer = asyncio.create_task(self._delayed_tts())
+                # Heuristic: Aggressive filtering for TUI elements
+                # We don't want to read the prompt, status bars, or file indicators
+                
+                # Regex patterns to IGNORE (Blacklist)
+                ignore_patterns = [
+                    r'^[\s\W_]+$',              # Symbols/Empty
+                    r'.*GEMINI\.md.*',          # File indicators
+                    r'.*MCP server.*',          # Server indicators
+                    r'.*Type your message.*',   # Prompt instruction
+                    r'.*no sandbox.*',          # Status bar info
+                    r'.*Auto \(Gemini.*\).*',   # Model info
+                    r'^[▀▄█\s]+$',              # Block characters (Status bar borders)
+                    r'^~/.+',                   # Path indicators
+                    r'.*Waiting for auth.*',    # Auth prompts
+                    r'.*Press ESC or CTRL\+C.*', # Cancel prompts
+                    r'^\s*>\s*$',               # Just a prompt arrow
+                ]
+
+                should_speak = True
+                if not clean_chunk or not any(c.isalpha() for c in clean_chunk):
+                    should_speak = False
+                else:
+                    for pattern in ignore_patterns:
+                        if re.search(pattern, clean_chunk):
+                            should_speak = False
+                            break
+                
+                if should_speak:
+                    self.tts_buffer += " " + clean_chunk
+                    
+                    # Debounce/Batch TTS sending
+                    if self.tts_timer:
+                        self.tts_timer.cancel()
+                    self.tts_timer = asyncio.create_task(self._delayed_tts())
 
         except OSError:
             pass

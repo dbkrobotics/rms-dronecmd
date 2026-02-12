@@ -20,46 +20,43 @@
             color: var(--text-color);
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
-            overflow: hidden;
+            overflow: hidden; /* Prevent scroll */
         }
 
         .container {
             text-align: center;
             background-color: var(--secondary-bg);
-            padding: 2.5rem;
-            border-radius: 1.5rem;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
+            padding: 3rem;
+            border-radius: 2rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            max-width: 1000px; /* Slightly narrower for better proportion */
             width: 90%;
+            max-width: 1000px;
             display: flex;
             flex-direction: column;
-            justify-content: space-between; /* Distribute vertical space */
-            height: 80vh;
-            margin: auto; /* Center in flex body */
+            gap: 2rem; /* Consistent spacing between elements */
             position: relative;
         }
-        
-        /* ... skipped intermediate CSS ... */
 
+        /* ... existing styles ... */
+        
         .log-container {
             width: 100%;
             text-align: left;
             font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 1rem; /* Larger font */
+            font-size: 1rem;
             color: #94a3b8;
-            flex-grow: 1; /* Fill remaining space */
+            height: 200px; /* Fixed height for logs */
             overflow-y: auto;
             background-color: rgba(0, 0, 0, 0.3);
-            border-radius: 0.5rem;
+            border-radius: 1rem;
             padding: 1.5rem;
             border: 1px solid rgba(255, 255, 255, 0.05);
-            margin-top: auto; /* Push to bottom if needed */
+            box-sizing: border-box; /* verified */
         }
 
     </style>
