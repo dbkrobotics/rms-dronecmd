@@ -5,9 +5,15 @@ import urllib.request
 import urllib.error
 
 SERVER_URL = "http://localhost:5111/hook/speak"
+LOG_FILE = "/tmp/gemini_voice_hooks.log"
 
 def log(msg):
     sys.stderr.write(f"[VoiceHook-Speak] {msg}\n")
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(f"[VoiceHook-Speak] {msg}\n")
+    except Exception:
+        pass
 
 def main():
     log("Starting Speak Hook...")

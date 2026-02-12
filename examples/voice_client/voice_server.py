@@ -20,8 +20,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 socket_app = socketio.ASGIApp(sio, app)
 
 # --- Global State ---
-# Store the latest voice input from the user to be picked up by the CLI hook
-latest_voice_input: Optional[str] = None
+# Store voice inputs in a list to support multiple sentences/fragments
+voice_input_buffer = []
 # Event to notify when new input is available (for long polling)
 input_event = asyncio.Event()
 
@@ -37,7 +37,7 @@ async def index():
 @app.post("/hook/speak")
 async def hook_speak(request: SpeakRequest):
     """
-    Endpoint for Gemini CLI Hook (AfterModel/Output) to send text to be spoken.
+    Endpoint for Gemini CLI Hook to send text to be spoken.
     """
     text = request.text
     print(f"[Server] Gemini Output -> Browser: {text}")
@@ -47,32 +47,27 @@ async def hook_speak(request: SpeakRequest):
 @app.get("/hook/listen")
 async def hook_listen():
     """
-    Endpoint for Gemini CLI Hook (BeforeAgent/Input) to fetch user voice input.
-    This implementation uses long-polling: it waits until voice input is available.
+    Endpoint for Gemini CLI Hook to fetch user voice input.
     """
-    global latest_voice_input
+    global voice_input_buffer
     print("[Server] CLI is listening for voice input...")
     
-    # Wait for input (with a timeout to prevent hanging forever if needed, 
-    # but hooks might have their own timeout. Let's wait up to 30s)
-    try:
-        await asyncio.wait_for(input_event.wait(), timeout=30.0)
-        
-        # Reset event and retrieve data
-        input_text = latest_voice_input
-        latest_voice_input = None
-        input_event.clear()
-        
-        # If input was cleared or empty, return nothing
-        if not input_text:
-             return {"text": None}
-
-        print(f"[Server] Voice Input -> CLI: {input_text}")
-        return {"text": input_text}
-        
-    except asyncio.TimeoutError:
-        print("[Server] Listen timed out.")
-        return {"text": None}
+    # Wait for input if buffer is empty
+    if not voice_input_buffer:
+        try:
+            # Wait up to 30s for input
+            await asyncio.wait_for(input_event.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            print("[Server] Listen timed out.")
+            return {"text": None}
+    
+    # Retrieve all buffered input
+    input_text = " ".join(voice_input_buffer)
+    voice_input_buffer = [] # Clear buffer
+    input_event.clear() # Reset event
+    
+    print(f"[Server] Voice Input -> CLI: {input_text}")
+    return {"text": input_text.strip()}
 
 # --- Socket.IO Events ---
 @sio.event
@@ -86,15 +81,15 @@ async def disconnect(sid):
 @sio.event
 async def audio_input(sid, data):
     """
-    Received transcribed text from browser (User's voice).
-    Store it so the /hook/listen endpoint can pick it up.
+    Received transcribed text from browser.
+    Append to buffer.
     """
-    global latest_voice_input
+    global voice_input_buffer
     print(f"[Socket] Browser -> Server: {data}")
     
-    latest_voice_input = data
-    # Notify waiting listeners
-    input_event.set()
+    if data:
+        voice_input_buffer.append(data)
+        input_event.set()
 
 if __name__ == "__main__":
     uvicorn.run(socket_app, host="0.0.0.0", port=PORT)
