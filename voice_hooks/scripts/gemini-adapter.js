@@ -31,42 +31,81 @@ function log(msg) {
     }
 }
 
-log(`Hook triggered. Processing...`);
-
-// Read stdin (Hook Payload)
-let inputData = '';
-let processed = false;
-
-// Set a timeout to avoid hanging if stdin doesn't close
-const inputTimeout = setTimeout(() => {
-    if (!processed) {
-        log('Timeout waiting for stdin. Processing with collected data...');
-        processInput();
-    }
-}, 1000);
-
-process.stdin.on('data', chunk => {
-    log(`Received stdin chunk: ${chunk.length} bytes`);
-  inputData += chunk;
+// Global Error Handlers
+process.on('uncaughtException', (err) => {
+    log(`UNCAUGHT EXCEPTION: ${err.message}\n${err.stack}`);
+    process.exit(1);
 });
 
-process.stdin.on('end', () => {
-    if (!processed) {
+process.on('unhandledRejection', (reason, promise) => {
+    log(`UNHANDLED REJECTION: ${reason}`);
+    process.exit(1);
+});
+
+log(`Hook triggered. Checking server connectivity...`);
+
+// Check connectivity first
+const checkReq = http.request({
+    hostname: SERVER_HOST,
+    port: SERVER_PORT,
+    path: '/api/utterances/status', // Simple GET endpoint
+    method: 'GET',
+    timeout: 2000
+}, (res) => {
+    log(`Server is reachable (Status: ${res.statusCode})`);
+    startProcessing();
+});
+
+checkReq.on('error', (e) => {
+    log(`SERVER UNREACHABLE: ${e.message}. Is 'npm start' running?`);
+    process.exit(0);
+});
+
+checkReq.on('timeout', () => {
+    log(`SERVER CHECK TIMEOUT. Is 'npm start' running?`);
+    checkReq.destroy();
+    process.exit(0);
+});
+
+checkReq.end();
+
+function startProcessing() {
+    log('Starting input processing...');
+    // Read stdin (Hook Payload)
+    let inputData = '';
+    let processed = false;
+
+    // Set a timeout to avoid hanging if stdin doesn't close
+    const inputTimeout = setTimeout(() => {
+        if (!processed) {
+            log('Timeout waiting for stdin. Processing with collected data...');
+            processInput();
+        }
+    }, 1000);
+
+    process.stdin.on('data', chunk => {
+        log(`Received stdin chunk: ${chunk.length} bytes`);
+        inputData += chunk;
+    });
+
+    process.stdin.on('end', () => {
+        if (!processed) {
         clearTimeout(inputTimeout);
         processInput();
-    }
-});
+        }
+    });
 
-function processInput() {
-    processed = true;
-    try {
-        log(`Payload received (length: ${inputData.length})`);
-        const payload = inputData ? JSON.parse(inputData) : {};
-        handleEvent(EVENT, payload);
-    } catch (e) {
-        log(`Error parsing payload: ${e.message}`);
-        // If invalid JSON or empty, just proceed with empty object
-        handleEvent(EVENT, {});
+    function processInput() {
+        processed = true;
+        try {
+            log(`Payload received (length: ${inputData.length})`);
+            const payload = inputData ? JSON.parse(inputData) : {};
+            handleEvent(EVENT, payload);
+        } catch (e) {
+            log(`Error parsing payload: ${e.message}`);
+            // If invalid JSON or empty, just proceed with empty object
+            handleEvent(EVENT, {});
+        }
     }
 }
 
