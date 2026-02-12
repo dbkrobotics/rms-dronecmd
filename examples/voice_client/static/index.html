@@ -31,108 +31,32 @@
         .container {
             text-align: center;
             background-color: var(--secondary-bg);
-            padding: 2rem;
-            border-radius: 1rem;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            padding: 3rem; /* More padding */
+            border-radius: 1.5rem;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            max-width: 600px;
-            width: 90%;
-        }
-
-        h1 {
-            margin-bottom: 2rem;
-            font-size: 2.5rem;
-            font-weight: 800;
-            letter-spacing: -0.05em;
-            background: linear-gradient(to right, #60a5fa, #c084fc);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        #status {
-            font-size: 1.5rem;
-            margin-bottom: 2rem;
-            font-weight: 600;
-            color: var(--accent-color);
-            min-height: 1.5em;
-        }
-
-        .visualizer {
-            width: 100%;
-            height: 80px;
+            max-width: 1200px; /* Much wider */
+            width: 95%;
             display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            margin-bottom: 3rem;
-        }
-
-        .bar {
-            width: 8px;
-            height: 12px;
-            background-color: var(--accent-color);
-            border-radius: 4px;
-            transition: height 0.1s ease;
-        }
-
-        @keyframes pulse {
-            0% { height: 12px; opacity: 0.5; }
-            100% { height: 60px; opacity: 1; }
-        }
-
-        #transcript {
-            font-size: 2rem; /* Much larger */
-            font-weight: 500;
-            line-height: 1.4;
-            margin-bottom: 3rem;
-            min-height: 2em;
-            color: #f1f5f9;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
-        }
-
-        .controls {
-            display: flex;
-            gap: 1.5rem; /* More space */
-            justify-content: center;
-            margin-bottom: 2rem;
-        }
-
-        button {
-            padding: 1rem 2.5rem; /* Larger buttons */
-            font-size: 1.1rem; 
-            border-radius: 0.75rem;
-            cursor: pointer;
-            font-weight: 700;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-            background-color: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            color: white;
-        }
-
-        button:hover {
-            background-color: rgba(255, 255, 255, 0.1);
-            transform: translateY(-2px);
-        }
-
-        button.active {
-            background-color: var(--error-color);
-            border-color: var(--error-color);
-            box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+            flex-direction: column;
+            height: 85vh; /* Fixed height for the card */
         }
         
+        /* ... skipped intermediate CSS ... */
+
         .log-container {
             width: 100%;
             text-align: left;
             font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 0.9rem;
+            font-size: 1rem; /* Larger font */
             color: #94a3b8;
-            height: 150px;
+            flex-grow: 1; /* Fill remaining space */
             overflow-y: auto;
             background-color: rgba(0, 0, 0, 0.3);
             border-radius: 0.5rem;
-            padding: 1rem;
+            padding: 1.5rem;
             border: 1px solid rgba(255, 255, 255, 0.05);
+            margin-top: auto; /* Push to bottom if needed */
         }
 
     </style>

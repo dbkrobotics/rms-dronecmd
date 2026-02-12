@@ -36,9 +36,9 @@ class WebVoiceWrapper:
             
         @self.sio.on('user_message')
         async def on_user_message(data):
-            if self.master_fd:
                 # Write to PTY (simulates user typing)
-                os.write(self.master_fd, (data + "\n").encode())
+                # Use \r for sending command (Enter key)
+                os.write(self.master_fd, (data + "\r").encode())
 
     def _set_pty_size(self):
         """Sync PTY size with host terminal size."""
