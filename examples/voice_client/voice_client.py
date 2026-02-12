@@ -116,8 +116,14 @@ class VoiceClient:
                         if not isinstance(schema, dict):
                             return schema
                         new_schema = schema.copy()
+                        
+                        for field in ["additionalProperties", "title", "$schema", "required"]: 
+                            if field in new_schema and field != "required":
+                                del new_schema[field]
+                        
                         if "type" in new_schema and isinstance(new_schema["type"], str):
                             new_schema["type"] = new_schema["type"].upper()
+                            
                         if "properties" in new_schema:
                             new_schema["properties"] = {k: sanitize_schema(v) for k, v in new_schema["properties"].items()}
                         if "items" in new_schema:
@@ -126,9 +132,8 @@ class VoiceClient:
 
                     sanitized_input_schema = sanitize_schema(tool.inputSchema)
                     
-                    # Construct function declaration for Gemini
                     func_decl = {
-                        "name": tool.name.replace("-", "_"), # Gemini prefers underscores
+                        "name": tool.name.replace("-", "_"),
                         "description": tool.description,
                         "parameters": sanitized_input_schema
                     }
