@@ -218,8 +218,28 @@ class VoiceClient:
 
                         live_status.update(Spinner("moon", text="Thinking..."))
                         
-                        # Send to Gemini
-                        response = self.chat.send_message(user_input)
+                        # Send to Gemini with Retry Logic
+                        max_retries = 3
+                        retry_delay = 2
+                        response = None
+                        
+                        for attempt in range(max_retries):
+                            try:
+                                response = self.chat.send_message(user_input)
+                                break
+                            except Exception as e:
+                                if "429" in str(e) or "Resource exhausted" in str(e):
+                                    if attempt < max_retries - 1:
+                                        wait_time = retry_delay * (2 ** attempt)
+                                        console.print(f"[bold yellow]Rate limit hit. Retrying in {wait_time}s...[/bold yellow]")
+                                        time.sleep(wait_time)
+                                        continue
+                                console.print(f"[bold red]Gemini API Error:[/bold red] {e}")
+                                self.speak("I'm having trouble connecting to the AI service.")
+                                break
+                        
+                        if not response:
+                            continue
                         
                         # Check for function calls
                         for part in response.parts:
@@ -243,21 +263,34 @@ class VoiceClient:
                                         "response": {"result": result.content}
                                     }
                                     
-                                    response = self.chat.send_message(
-                                        genai.protos.Content(
-                                            parts=[genai.protos.Part(function_response=genai.protos.FunctionResponse(
-                                                name=fn.name,
-                                                response={"result": result.content} # Simplified
-                                            ))]
-                                        )
-                                    )
+                                    # Retry loop for tool output submission as well
+                                    for attempt in range(max_retries):
+                                        try:
+                                            response = self.chat.send_message(
+                                                genai.protos.Content(
+                                                    parts=[genai.protos.Part(function_response=genai.protos.FunctionResponse(
+                                                        name=fn.name,
+                                                        response={"result": result.content} # Simplified
+                                                    ))]
+                                                )
+                                            )
+                                            break
+                                        except Exception as e:
+                                            if "429" in str(e):
+                                                if attempt < max_retries - 1:
+                                                    time.sleep(retry_delay * (2 ** attempt))
+                                                    continue
+                                            console.print(f"[bold red]Error sending tool result:[/bold red] {e}")
+                                            break
                                     
                                 except Exception as e:
                                     console.print(f"[bold red]Tool Execution Error:[/bold red] {e}")
                                     self.speak("There was an error executing the tool.")
+                                    # Need to potentially inform Gemini of error loop? 
+                                    # consistent conversation state might be lost here without proper error injection.
 
                         # Final response
-                        if response.text:
+                        if response and response.text:
                             self.speak(response.text)
 
 if __name__ == "__main__":
