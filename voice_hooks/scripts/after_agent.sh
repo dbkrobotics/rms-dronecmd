@@ -6,4 +6,4 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADAPTER="$SCRIPT_DIR/gemini-adapter.js"
 
 # Execute with node. stdin will be passed through automatically.
-node "$ADAPTER" AfterAgent
+exec node "$ADAPTER" AfterAgent

@@ -53,6 +53,7 @@ const checkReq = http.request({
     timeout: 2000
 }, (res) => {
     log(`Server is reachable (Status: ${res.statusCode})`);
+    checkReq.destroy(); // Prevent timeout from firing later
     startProcessing();
 });
 

@@ -9,4 +9,4 @@ ADAPTER="$SCRIPT_DIR/gemini-adapter.js"
 
 # Execute with node
 # Using system node
-node "$ADAPTER" BeforeAgent
+exec node "$ADAPTER" BeforeAgent
