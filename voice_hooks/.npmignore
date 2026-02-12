@@ -1,0 +1,50 @@
+# Development files
+src/
+docs/
+scripts/
+*.test.ts
+jest.config.js
+tsconfig.json
+tsup.config.ts
+knip.json
+claude.md
+roadmap.md
+
+# Git and CI
+.git/
+.github/
+.gitignore
+.husky/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and temp files
+*.log
+npm-debug.log*
+.DS_Store
+*.tmp
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Local claude settings (don't ship user's settings)
+# But DO include the hooks directory
+.claude/*
+!.claude/hooks/
+
+# Node modules (npm will handle dependencies)
+node_modules/
+
+# Keep these files
+!dist/
+!bin/
+!public/
+!package.json
+!package-lock.json
+!README.md
+!LICENSE

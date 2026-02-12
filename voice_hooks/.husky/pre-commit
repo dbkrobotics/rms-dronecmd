@@ -1,0 +1,36 @@
+#!/bin/sh
+
+# Automatically stage all changes
+echo "Auto-staging all changes..."
+git add .
+
+# # Check if the roadmap.md file has changes
+# if git diff --cached --quiet roadmap.md; then
+#   # Exit code 0 from diff --quiet means NO changes were staged for roadmap.md
+#   echo "Error: roadmap.md must be updated and staged in every commit." >&2
+#   exit 1
+# fi
+
+# Run knip to check for unused dependencies, files, and exports
+echo "Running knip to check for unused dependencies, files, and exports..."
+npx knip --no-config-hints || {
+  echo "Error: Knip found unused dependencies, files, or exports. Please fix the issues above." >&2
+  exit 1
+}
+
+# Run ts-prune to double-check for unused exports
+echo "Running ts-prune to check for unused TypeScript exports..."
+npx ts-prune --error || {
+  echo "Error: ts-prune found unused TypeScript exports. Please fix the issues above." >&2
+  exit 1
+}
+
+# Run the build to ensure it compiles successfully
+echo "Running build to ensure code compiles..."
+npm run build || {
+  echo "Error: Build failed. Please fix compilation errors before committing." >&2
+  exit 1
+}
+
+# Run tests silently
+npm test -- --silent

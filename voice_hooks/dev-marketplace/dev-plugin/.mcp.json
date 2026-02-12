@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "voice-hooks": {
+      "command": "npx",
+      "args": [
+        "mcp-voice-hooks",
+        "--skip-hooks"
+      ]
+    }
+  }
+}
