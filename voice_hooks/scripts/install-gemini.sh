@@ -30,9 +30,9 @@ cat <<EOF
         "timeout": 60000
       }
     ],
-    "AfterModel": [
+    "AfterAgent": [
       {
-        "command": "node $ADAPTER_SCRIPT AfterModel",
+        "command": "node $ADAPTER_SCRIPT AfterAgent",
         "timeout": 10000
       }
     ]
