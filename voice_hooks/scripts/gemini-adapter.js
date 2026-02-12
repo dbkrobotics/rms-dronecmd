@@ -35,21 +35,40 @@ log(`Hook triggered. Processing...`);
 
 // Read stdin (Hook Payload)
 let inputData = '';
+let processed = false;
+
+// Set a timeout to avoid hanging if stdin doesn't close
+const inputTimeout = setTimeout(() => {
+    if (!processed) {
+        log('Timeout waiting for stdin. Processing with collected data...');
+        processInput();
+    }
+}, 1000);
+
 process.stdin.on('data', chunk => {
+    log(`Received stdin chunk: ${chunk.length} bytes`);
   inputData += chunk;
 });
 
 process.stdin.on('end', () => {
-  try {
-      log(`Payload received (length: ${inputData.length})`);
-    const payload = inputData ? JSON.parse(inputData) : {};
-    handleEvent(EVENT, payload);
-  } catch (e) {
-      log(`Error parsing payload: ${e.message}`);
-    // If invalid JSON or empty, just proceed with empty object
-    handleEvent(EVENT, {});
-  }
+    if (!processed) {
+        clearTimeout(inputTimeout);
+        processInput();
+    }
 });
+
+function processInput() {
+    processed = true;
+    try {
+        log(`Payload received (length: ${inputData.length})`);
+        const payload = inputData ? JSON.parse(inputData) : {};
+        handleEvent(EVENT, payload);
+    } catch (e) {
+        log(`Error parsing payload: ${e.message}`);
+        // If invalid JSON or empty, just proceed with empty object
+        handleEvent(EVENT, {});
+    }
+}
 
 function handleEvent(event, payload) {
     log(`Handling event: ${event}`);
