@@ -55,6 +55,15 @@ class WebVoiceWrapper:
         except OSError:
             pass
 
+    def read_from_stdin(self):
+        """Read from host stdin and write to PTY."""
+        try:
+            data = os.read(sys.stdin.fileno(), 1024)
+            if data:
+                os.write(self.master_fd, data)
+        except OSError:
+            pass
+
     async def run_subprocess(self):
         """Runs the CLI command in a PTY."""
         console.print(f"[bold blue]Launching CLI in PTY:[/bold blue] {self.command}")
@@ -75,12 +84,16 @@ class WebVoiceWrapper:
 
         # Register PTY reader with asyncio loop
         loop = asyncio.get_running_loop()
+        
+        # Register readers
         loop.add_reader(self.master_fd, self.read_from_pty)
+        loop.add_reader(sys.stdin.fileno(), self.read_from_stdin)
 
         try:
             await self.process.wait()
         finally:
             loop.remove_reader(self.master_fd)
+            loop.remove_reader(sys.stdin.fileno())
             os.close(self.master_fd)
 
     async def run(self):
