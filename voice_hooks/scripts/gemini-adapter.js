@@ -117,25 +117,32 @@ function handleEvent(event, payload) {
      // Gemini: BeforeAgent
       // Action: Check for voice input. If found, inject it.
      
-      log('Calling /api/wait-for-utterances...');
-     callApi('/api/wait-for-utterances', {}, (response) => {
-         log(`Wait response received: ${JSON.stringify(response)}`);
+      // FORCE ACTIVATE VOICE INPUT
+      // Because the server defaults to inactive, we must tell it we are listening.
+      log('Forcing voice input activation...');
+      callApi('/api/voice-input-state', { active: true }, (activateResp) => {
+          log(`Voice activation response: ${JSON.stringify(activateResp)}`);
 
-         if (response && response.success && response.utterances && response.utterances.length > 0) {
-             // We have voice input!
-             const text = response.utterances.map(u => u.text).join(' ');
-             const message = `User voice input: "${text}"`;
-             log(`Injecting system message: ${message}`);
+         log('Calling /api/wait-for-utterances...');
+         callApi('/api/wait-for-utterances', {}, (response) => {
+             log(`Wait response received: ${JSON.stringify(response)}`);
 
-             // Inject it into Gemini.
-             console.log(JSON.stringify({
-                 systemMessage: message
-             }));
-         } else {
-             log('No voice input found or timeout.');
-             // No input, do nothing
-             console.log('{}');
-         }
+             if (response && response.success && response.utterances && response.utterances.length > 0) {
+                 // We have voice input!
+                 const text = response.utterances.map(u => u.text).join(' ');
+                 const message = `User voice input: "${text}"`;
+                 log(`Injecting system message: ${message}`);
+
+                 // Inject it into Gemini.
+                 console.log(JSON.stringify({
+                     systemMessage: message
+                 }));
+             } else {
+                 log('No voice input found or timeout.');
+                 // No input, do nothing
+                 console.log('{}');
+             }
+         });
      });
 
   } else if (event === 'AfterModel') {
