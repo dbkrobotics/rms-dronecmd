@@ -161,11 +161,44 @@ class VoiceClient:
 
                 console.print(f"[green]Loaded {len(gemini_tools)} tools.[/green]")
 
+                console.print(f"[green]Loaded {len(gemini_tools)} tools.[/green]")
+
+                # Dynamically select model
+                available_models = []
+                try:
+                    for m in genai.list_models():
+                        if 'generateContent' in m.supported_generation_methods:
+                            available_models.append(m.name)
+                except Exception as e:
+                    console.print(f"[bold red]Error listing models:[/bold red] {e}")
+
+                model_name = "models/gemini-1.5-flash" # Default fallback
+                
+                # Priority: flash > pro > 1.5 > 1.0
+                priorities = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
+                selected_model = None
+                
+                for p in priorities:
+                    for m in available_models:
+                        if p in m:
+                            selected_model = m
+                            break
+                    if selected_model:
+                        break
+                
+                if not selected_model and available_models:
+                     selected_model = available_models[0]
+                
+                if selected_model:
+                    model_name = selected_model
+
+                console.print(f"[bold blue]Using Gemini Model: {model_name}[/bold blue]")
+
                 # Initialize Gemini with tools
                 # Using gemini-1.5-flash for speed
                 # Note: 'google.generativeai' is deprecated, but we are fixing the schema issue first.
                 self.model = genai.GenerativeModel(
-                    model_name='gemini-1.5-flash',
+                    model_name=model_name,
                     tools=gemini_tools
                 )
                 self.chat = self.model.start_chat()
