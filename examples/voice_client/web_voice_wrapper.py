@@ -1,10 +1,9 @@
 import asyncio
 import os
 import sys
-import subprocess
-import argparse
+import pty
 import socketio
-import queue
+import argparse
 from rich.console import Console
 
 # --- Configuration ---
@@ -16,8 +15,8 @@ class WebVoiceWrapper:
     def __init__(self, command):
         self.command = command
         self.sio = socketio.AsyncClient()
+        self.master_fd = None
         self.process = None
-        self.input_queue = asyncio.Queue()
 
     async def connect_server(self):
         try:
@@ -30,40 +29,53 @@ class WebVoiceWrapper:
         @self.sio.on('user_message')
         async def on_user_message(data):
             console.print(f"[bold green]Voice Input:[/bold green] {data}")
-            if self.process and self.process.stdin:
-                # Inject into CLI stdin
-                self.process.stdin.write((data + "\n").encode())
-                await self.process.stdin.drain()
+            if self.master_fd:
+                # Write to PTY (simulates user typing)
+                os.write(self.master_fd, (data + "\n").encode())
+
+    def read_from_pty(self):
+        """Read output from the PTY master."""
+        try:
+            data = os.read(self.master_fd, 1024)
+            if data:
+                text = data.decode(errors='replace').strip()
+                # Filter out raw echo if needed, or just send everything
+                # Basic cleaning to remove ANSI codes could be added here if needed for TTS
+                if text:
+                    console.print(f"[dim]{text}[/dim]")
+                    # Emit to server for TTS
+                    # We use create_task because this is called from add_reader callback
+                    asyncio.create_task(self.sio.emit('bot_output', text))
+        except OSError:
+            pass
 
     async def run_subprocess(self):
-        """Runs the CLI command as a subprocess."""
-        console.print(f"[bold blue]Launching CLI:[/bold blue] {self.command}")
+        """Runs the CLI command in a PTY."""
+        console.print(f"[bold blue]Launching CLI in PTY:[/bold blue] {self.command}")
         
+        # Create pseudo-terminal
+        master, slave = pty.openpty()
+        self.master_fd = master
+
+        # Start subprocess attached to the PTY slave
         self.process = await asyncio.create_subprocess_shell(
             self.command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            preexec_fn=os.setsid # Create new session
         )
+        os.close(slave) # Host doesn't need the slave fd
 
-        async def read_stream(stream, channel):
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                text = line.decode().strip()
-                if text:
-                    console.print(f"[{channel}] {text}")
-                    # Send stdout to Web for TTS
-                    if channel == "stdout":
-                         if self.sio.connected:
-                            await self.sio.emit('bot_output', text)
+        # Register PTY reader with asyncio loop
+        loop = asyncio.get_running_loop()
+        loop.add_reader(self.master_fd, self.read_from_pty)
 
-        await asyncio.gather(
-            read_stream(self.process.stdout, "stdout"),
-            read_stream(self.process.stderr, "stderr"),
-            self.process.wait()
-        )
+        try:
+            await self.process.wait()
+        finally:
+            loop.remove_reader(self.master_fd)
+            os.close(self.master_fd)
 
     async def run(self):
         await self.connect_server()
