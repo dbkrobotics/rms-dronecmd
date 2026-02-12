@@ -27,13 +27,7 @@ class WebVoiceWrapper:
         self.tts_timer = None
         self.old_tty_attrs = None
 
-    async def connect_server(self):
-        try:
-            await self.sio.connect(VOICE_SERVER_URL)
-            # We can't use console.print easily in raw mode, so we just rely on connection state
-        except Exception:
-            sys.exit(1)
-            
+        # Register Socket.IO events
         @self.sio.on('user_message')
         async def on_user_message(data):
             console.print(f"[bold magenta]Wrapper received: {data}[/bold magenta]")
