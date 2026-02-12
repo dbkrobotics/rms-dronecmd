@@ -3,221 +3,156 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini Voice Console</title>
-    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <title>Gemini Voice Interface</title>
     <style>
-        :root {
-            --bg-color: #0f172a;
-            --text-color: #e2e8f0;
-            --accent-color: #3b82f6;
-            --secondary-bg: #1e293b;
-            --success-color: #10b981;
-            --error-color: #ef4444;
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background-color: #1a1a1a; color: #eee; margin: 0; }
+        h1 { margin-bottom: 20px; }
+        #status { font-size: 1.2em; margin-bottom: 20px; color: #aaa; }
+        .mic-btn {
+            width: 80px; height: 80px; border-radius: 50%;
+            background-color: #dc3545; border: none; outline: none; cursor: pointer;
+            box-shadow: 0 4px 15px rgba(220, 53, 69, 0.4); transition: transform 0.1s;
+            display: flex; align-items: center; justify-content: center;
         }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            margin: 0;
-            overflow: hidden; /* Prevent scroll */
+        .mic-btn.listening { background-color: #28a745; box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4); animation: pulse 1.5s infinite; }
+        .mic-btn:active { transform: scale(0.95); }
+        .mic-icon { font-size: 32px; color: white; }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7); }
+            70% { box-shadow: 0 0 0 15px rgba(40, 167, 69, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(40, 167, 69, 0); }
         }
-
-        .container {
-            text-align: center;
-            background-color: var(--secondary-bg);
-            padding: 3rem;
-            border-radius: 2rem;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            width: 90%;
-            max-width: 1000px;
-            display: flex;
-            flex-direction: column;
-            gap: 2rem; /* Consistent spacing between elements */
-            position: relative;
-        }
-
-        /* ... existing styles ... */
-        
-        .log-container {
-            width: 100%;
-            text-align: left;
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-            font-size: 1rem;
-            color: #94a3b8;
-            height: 200px; /* Fixed height for logs */
-            overflow-y: auto;
-            background-color: rgba(0, 0, 0, 0.3);
-            border-radius: 1rem;
-            padding: 1.5rem;
-            border: 1px solid rgba(255, 255, 255, 0.05);
-            box-sizing: border-box; /* verified */
-        }
-
+        #transcript { margin-top: 20px; max-width: 80%; text-align: center; font-style: italic; color: #888; }
+        #last-response { margin-top: 20px; max-width: 80%; padding: 15px; background: #333; border-radius: 8px; }
     </style>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
 </head>
 <body>
-
-    <div class="container">
-        <h1>Gemini Voice Bridge</h1>
-        <div id="status">Connecting...</div>
-
-        <div class="visualizer" id="visualizer">
-            <div class="bar"></div>
-            <div class="bar"></div>
-            <div class="bar"></div>
-            <div class="bar"></div>
-            <div class="bar"></div>
-        </div>
-
-        <div id="transcript">Click "Start Listening" to begin.</div>
-
-        <div class="controls">
-            <button id="toggleBtn">Start Listening</button>
-        </div>
-        
-        <div class="log-container" id="logs"></div>
-    </div>
+    <h1>Gemini Voice</h1>
+    <div id="status">Click to Activate</div>
+    <button id="micBtn" class="mic-btn">
+        <span class="mic-icon">🎤</span>
+    </button>
+    <div id="transcript">...</div>
+    <div id="last-response" style="display:none;"></div>
 
     <script>
         const socket = io();
-        const statusEl = document.getElementById('status');
-        const transcriptEl = document.getElementById('transcript');
-        const toggleBtn = document.getElementById('toggleBtn');
-        const visualizer = document.getElementById('visualizer');
-        const logsEl = document.getElementById('logs');
+            const micBtn = document.getElementById('micBtn');
+            const statusDiv = document.getElementById('status');
+            const transcriptDiv = document.getElementById('transcript');
+            const responseDiv = document.getElementById('last-response');
 
         let isListening = false;
-        let recognition = null;
-        let synthesis = window.speechSynthesis;
+            let recognition;
 
-        function log(msg) {
-            const div = document.createElement('div');
-            div.textContent = `> ${msg}`;
-            logsEl.prepend(div); // Newest top
-        }
-
-        // --- Socket.IO ---
-        socket.on('connect', () => {
-            statusEl.textContent = "Connected to Server";
-            log("Socket connected");
-        });
-
-        socket.on('disconnect', () => {
-            statusEl.textContent = "Disconnected";
-            statusEl.style.color = "var(--error-color)";
-            log("Socket disconnected");
-        });
-
-        socket.on('speak_message', (text) => {
-            log(`Speaking: "${text}"`);
-            speak(text);
-        });
-
-        // --- Speech Recognition ---
+            // --- Speech Recognition Setup ---
         if ('webkitSpeechRecognition' in window) {
             recognition = new webkitSpeechRecognition();
-            recognition.continuous = true;
+            recognition.continuous = true; // Keep listening
             recognition.interimResults = false; // Only final results
-            recognition.lang = 'en-US'; // Default to English
+            recognition.lang = 'en-US';
 
             recognition.onstart = () => {
                 isListening = true;
-                statusEl.textContent = "Listening...";
-                statusEl.style.color = "var(--success-color)";
-                toggleBtn.textContent = "Stop Listening";
-                toggleBtn.classList.add('active');
-                visualizer.childNodes.forEach(bar => bar.classList?.add('active'));
+                micBtn.classList.add('listening');
+                statusDiv.innerText = "Listening...";
+                statusDiv.style.color = "#28a745";
             };
 
             recognition.onend = () => {
-                log("Recognition ended");
-                if (isListening) {
-                    // Auto-restart if it stopped but we want to keep listening
-                    // Add a small delay to avoid browser throttling
-                    setTimeout(() => {
-                        try {
-                            recognition.start();
-                            log("Restarting recognition...");
-                        } catch (e) {
-                            log(`Restart error: ${e.message}`);
-                        }
-                    }, 300);
-                } else {
-                    statusEl.textContent = "Stopped";
-                    statusEl.style.color = "var(--text-color)";
-                    toggleBtn.textContent = "Start Listening";
-                    toggleBtn.classList.remove('active');
-                    visualizer.childNodes.forEach(bar => bar.classList?.remove('active'));
+                // Auto-restart logic to keep listening "always on" if desired, 
+                // but let's respect manual toggle for now. 
+                // If user wants continuous, we can uncomment the restart logic or handle `continuous` better.
+                // However, `continuous=true` handles one session. If it disconnects (silence timeout), 
+                // we might want to restart.
+                if (isListening) { 
+                    // Unexpected end (e.g. silence timeout), try to restart?
+                    // For now, treat as stop to avoid infinite loops if permission denied.
+                    isListening = false;
+                    micBtn.classList.remove('listening');
+                    statusDiv.innerText = "Click to Activate";
+                    statusDiv.style.color = "#aaa";
                 }
             };
 
             recognition.onresult = (event) => {
-                const result = event.results[event.results.length - 1];
-                if (result.isFinal) {
-                    const text = result[0].transcript.trim();
-                    transcriptEl.textContent = `You: "${text}"`;
-                    socket.emit('audio_input', text);
-                    log(`Sent: "${text}"`);
+                // Handle multiple results if needed, but usually just the last one
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        const transcript = event.results[i][0].transcript.trim();
+                        transcriptDiv.innerText = `You: "${transcript}"`;
+                        if (transcript.length > 0) {
+                            console.log("Sending:", transcript);
+                            socket.emit('audio_input', transcript);
+                        }
+                    }
                 }
             };
 
             recognition.onerror = (event) => {
-                log(`Recognition error: ${event.error}`);
-                if (event.error === 'not-allowed') {
-                    alert("Microphone access denied. Please allow microphone access.");
-                    isListening = false;
-                }
+                console.error("Speech recognition error", event.error);
+                statusDiv.innerText = "Error: " + event.error;
             };
 
         } else {
-            alert("Web Speech API not supported in this browser. Please use Chrome or Safari.");
+            statusDiv.innerText = "Web Speech API not supported in this browser.";
+            micBtn.disabled = true;
         }
 
-        // --- Text to Speech ---
+            // --- Socket.IO Events ---
+            socket.on('connect', () => {
+                console.log("Connected to server");
+            });
+
+            socket.on('speak_message', (text) => {
+                console.log("Speaking:", text);
+                responseDiv.innerText = text;
+                responseDiv.style.display = 'block';
+                speak(text);
+            });
+
+            // --- TTS Function ---
         function speak(text) {
-            // Stop listening temporarily while speaking to avoid self-loop
-            // optional: depending on use case. For now, we'll keep listening but maybe debounce.
-            
+            // Cancel any current speech
+            window.speechSynthesis.cancel();
+
             const utterance = new SpeechSynthesisUtterance(text);
-            utterance.onstart = () => {
-                statusEl.textContent = "Speaking...";
-                visualizer.childNodes.forEach(bar => bar.classList?.add('active'));
-            };
-            utterance.onend = () => {
-                statusEl.textContent = isListening ? "Listening..." : "Idle";
-                if (!isListening) {
-                    visualizer.childNodes.forEach(bar => bar.classList?.remove('active'));
+            utterance.lang = 'en-US';
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+
+            // Try to pick a better voice
+            // Need to wait for voices to load?
+            const setVoice = () => {
+                const voices = window.speechSynthesis.getVoices();
+                const preferredVoice = voices.find(v => v.name.includes('Google US English')) ||
+                    voices.find(v => v.name.includes('Samantha'));
+                if (preferredVoice) {
+                    utterance.voice = preferredVoice;
                 }
             };
-            synthesis.speak(utterance);
+
+            if (window.speechSynthesis.getVoices().length === 0) {
+                window.speechSynthesis.onvoiceschanged = setVoice;
+            } else {
+                setVoice();
+            }
+
+            window.speechSynthesis.speak(utterance);
         }
 
-        // --- Controls ---
-        toggleBtn.addEventListener('click', () => {
+            // --- UI Logic ---
+            micBtn.addEventListener('click', () => {
             if (isListening) {
                 isListening = false;
                 recognition.stop();
+                micBtn.classList.remove('listening');
+                statusDiv.innerText = "Click to Activate";
             } else {
                 recognition.start();
             }
         });
-
-        // Initialize visualizer bars
-        visualizer.innerHTML = '';
-        for(let i=0; i<5; i++) {
-            const bar = document.createElement('div');
-            bar.className = 'bar';
-            // Random animation delay for wave effect
-            bar.style.animationDelay = `${i * 0.1}s`;
-            visualizer.appendChild(bar);
-        }
-
     </script>
 </body>
 </html>

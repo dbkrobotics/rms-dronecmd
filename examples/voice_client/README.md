@@ -1,45 +1,54 @@
-# Voice-Enabled CLI Wrapper for Gemini
+# Gemini Voice Client (Hooks Edition)
 
-This project provides a **web-based voice interface** that wraps your existing CLI tools (like `gemini-cli` or `claude`). It uses the browser's native Speech API for high-quality speech recognition and synthesis, eliminating the need for complex local audio setup.
+This project provides a **voice interface** for `gemini-cli` using native **Hooks**.
+It allows you to speak to Gemini and hear its responses, using your browser's speech recognition and synthesis.
 
 ## Architecture
 
 1.  **Voice Server (`voice_server.py`)**: A local bridge server (FastAPI + Socket.IO) running on `localhost:5111`.
-2.  **Web Frontend (`static/index.html`)**: A lightweight web page that captures your voice and plays responses.
-3.  **CLI Wrapper (`web_voice_wrapper.py`)**: A Python script that wraps your target CLI command, injecting voice input and capturing text output.
-
-## Prerequisites
-
--   Python 3.10+
--   Modern Browser (Chrome, Edge, Safari) for Web Speech API support.
--   Your target CLI tool installed (e.g., `gemini` or `gemini-cli`).
+    -   Serves the web client.
+    -   Receives "Output" from Gemini Hook -> Sends to Browser (TTS).
+    -   Receives "Input" from Browser -> Holds it for Gemini Hook (STT).
+2.  **Web Client (`static/index.html`)**: Captures microphone input and plays audio.
+3.  **Hooks (`hooks/*.py`)**: Python scripts triggered by `gemini-cli` events.
+    -   `listen.py`: Runs `BeforeAgent`. Fetches voice input from server.
+    -   `speak.py`: Runs `AfterModel`. Sends text to server for TTS.
 
 ## Setup
 
-1.  **Install Dependencies**:
+1.  **Install Python Dependencies**:
     ```bash
-    uv venv voice_env
-    source voice_env/bin/activate
-    uv pip install -r requirements.txt
+    pip install -r requirements.txt
     ```
+    *(Ensure you have `fastapi`, `uvicorn`, `python-socketio` installed)*
+
+2.  **Configure Gemini CLI Hooks**:
+    Run the helper script to see the configuration you need to add to your `.gemini/config.json`:
+    ```bash
+    ./examples/install_hooks.sh
+    ```
+    Add the output JSON to your config file.
 
 ## Usage
 
-You need two terminal windows running simultaneously.
+1.  **Start the Voice Server**:
+    ```bash
+    python voice_server.py
+    ```
+    *Open `http://localhost:5111` in your browser.*
 
-### Terminal 1: Start the Voice Server
-This will host the web interface and bridge.
-```bash
-python voice_server.py
-```
-*Open `http://localhost:5111` in your browser if it doesn't open automatically.*
+2.  **Activate Voice Mode**:
+    -   Click the **Microphone Icon** on the web page to start listening.
+    -   You can leave it running.
 
-### Terminal 2: Run the CLI Wrapper
-Replace `gemini` with whatever command you usually use to run your CLI.
-```bash
-python web_voice_wrapper.py --command "gemini"
-```
+3.  **Run Gemini CLI**:
+    ```bash
+    gemini chat
+    ```
+    -   **Voice Input**: When the CLI is waiting for input (or just starting), speak to the browser. The `BeforeAgent` hook will inject your voice input.
+    -   **Voice Output**: When Gemini responds, the browser will read the text aloud.
 
-**Now, simply speak to the web page!**
--   Your voice will be transcribed and sent to the CLI.
--   The CLI's text output will be read aloud by the browser.
+## Troubleshooting
+
+-   **Timeout**: The `BeforeAgent` hook waits 60 seconds for voice input. If you don't speak, it might time out and proceed with empty input (or asking you to type).
+-   **Permissions**: Ensure your browser has microphone permission allowed for `localhost:5111`.
