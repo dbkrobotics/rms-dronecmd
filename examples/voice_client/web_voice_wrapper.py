@@ -69,16 +69,28 @@ class WebVoiceWrapper:
                 
                 # 2. Process for TTS (Sniffing)
                 text_chunk = data.decode(errors='replace')
-                # Strip ANSI codes
-                clean_chunk = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text_chunk)
                 
-                if clean_chunk:
-                    self.tts_buffer += clean_chunk
-                    
-                    # Debounce/Batch TTS sending
-                    if self.tts_timer:
-                        self.tts_timer.cancel()
-                    self.tts_timer = asyncio.create_task(self._delayed_tts())
+                # Robust ANSI stripping (CSI codes, OSC codes, and other noise)
+                # Remove OSC codes (sets window title etc): \x1b] ... \x07
+                text_chunk = re.sub(r'\x1b\][0-9]*;.*?(?:\x07|\x1b\\)', '', text_chunk)
+                # Remove CSI codes (colors, cursor, etc)
+                text_chunk = re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]', '', text_chunk)
+                # Remove other common control characters
+                text_chunk = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text_chunk)
+                
+                clean_chunk = text_chunk.strip()
+                
+                # Heuristic: Only speak if it looks like real text
+                # Ignore chunks that are just punctuation or very short status updates
+                if clean_chunk and any(c.isalpha() for c in clean_chunk):
+                     # Avoid speaking repeated prompt characters like ">" or "|"
+                    if not re.match(r'^[\s\W_]+$', clean_chunk):
+                        self.tts_buffer += " " + clean_chunk
+                        
+                        # Debounce/Batch TTS sending
+                        if self.tts_timer:
+                            self.tts_timer.cancel()
+                        self.tts_timer = asyncio.create_task(self._delayed_tts())
 
         except OSError:
             pass

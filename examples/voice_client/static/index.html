@@ -31,15 +31,18 @@
         .container {
             text-align: center;
             background-color: var(--secondary-bg);
-            padding: 3rem; /* More padding */
+            padding: 2.5rem;
             border-radius: 1.5rem;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.3), 0 10px 10px -5px rgba(0, 0, 0, 0.2);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            max-width: 1200px; /* Much wider */
-            width: 95%;
+            max-width: 1000px; /* Slightly narrower for better proportion */
+            width: 90%;
             display: flex;
             flex-direction: column;
-            height: 85vh; /* Fixed height for the card */
+            justify-content: space-between; /* Distribute vertical space */
+            height: 80vh;
+            margin: auto; /* Center in flex body */
+            position: relative;
         }
         
         /* ... skipped intermediate CSS ... */
