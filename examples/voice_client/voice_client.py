@@ -2,9 +2,12 @@ import os
 import sys
 import asyncio
 import time
-import ctypes
+import warnings
 from contextlib import contextmanager
 from typing import Optional
+
+# Suppress Warnings
+warnings.filterwarnings("ignore")
 
 # Third-party libraries
 import speech_recognition as sr
@@ -23,26 +26,35 @@ MCP_SERVER_DIR = os.getenv("MCP_SERVER_PATH", os.path.abspath(os.path.join(os.pa
 # -- UI Setup --
 console = Console()
 
-# Context manager to suppress C-level stderr (ALSA warnings)
+# Context manager to suppress C-level stderr (ALSA warnings) using file descriptors
+# This is safer than ctypes for avoiding segfaults
 @contextmanager
 def ignore_stderr():
-    ERROR_HANDLER_FUNC = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
-    def py_error_handler(filename, line, function, err, fmt):
-        pass
-    c_error_handler = ERROR_HANDLER_FUNC(py_error_handler)
     try:
-        asound = ctypes.cdll.LoadLibrary('libasound.so')
-        asound.snd_lib_error_set_handler(c_error_handler)
+        # Open /dev/null
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        # Save old stderr
+        old_stderr = os.dup(2)
+        sys.stderr.flush()
+        # Redirect stderr to /dev/null
+        os.dup2(devnull, 2)
+        os.close(devnull)
         yield
-        asound.snd_lib_error_set_handler(None)
-    except OSError:
-        # ALSA not present or Linux not used, just yield
+    except Exception:
         yield
+    finally:
+        # Restore stderr
+        try:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+        except Exception:
+            pass
 
 class VoiceClient:
     def __init__(self):
         self.recognizer = sr.Recognizer()
         
+        # Use the safe context manager
         with ignore_stderr():
             self.microphone = sr.Microphone()
         
@@ -103,7 +115,8 @@ class VoiceClient:
         # Connect to MCP Server
         server_params = StdioServerParameters(
             command="uv",
-            args=["run", "server.py"],
+            # Add --active to use the currently active virtual environment
+            args=["run", "--active", "server.py"],
             cwd=MCP_SERVER_DIR,
             env=os.environ.copy() # Pass env for dependencies
         )
