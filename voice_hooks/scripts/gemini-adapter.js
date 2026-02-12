@@ -9,9 +9,11 @@
  */
 
 import http from 'http';
+import fs from 'fs';
 
 const SERVER_PORT = process.env.MCP_VOICE_HOOKS_PORT || 5111;
 const SERVER_HOST = 'localhost';
+const LOG_FILE = '/tmp/gemini_hook_adapter.log';
 
 const EVENT = process.argv[2];
 
@@ -19,6 +21,17 @@ if (!EVENT) {
   console.error("Error: No event specified.");
   process.exit(1);
 }
+
+function log(msg) {
+    try {
+        const timestamp = new Date().toISOString();
+        fs.appendFileSync(LOG_FILE, `[${timestamp}] [${EVENT}] ${msg}\n`);
+    } catch (e) {
+        // Ignore logging errors
+    }
+}
+
+log(`Hook triggered. Processing...`);
 
 // Read stdin (Hook Payload)
 let inputData = '';
@@ -28,44 +41,49 @@ process.stdin.on('data', chunk => {
 
 process.stdin.on('end', () => {
   try {
+      log(`Payload received (length: ${inputData.length})`);
     const payload = inputData ? JSON.parse(inputData) : {};
     handleEvent(EVENT, payload);
   } catch (e) {
+      log(`Error parsing payload: ${e.message}`);
     // If invalid JSON or empty, just proceed with empty object
     handleEvent(EVENT, {});
   }
 });
 
 function handleEvent(event, payload) {
-  // Map Gemini Events to mcp-voice-hooks Actions
-  // mcp-voice-hooks generic API: /api/hooks/<action>
-  // Actions: 'pre-speak' (for BeforeModel/AfterModel?), 'stop', 'post-tool'
+    log(`Handling event: ${event}`);
   
   if (event === 'BeforeAgent') {
+      log('Entering BeforeAgent logic...');
      // Gemini: BeforeAgent
-     // Action: Check for voice input. If found, inject it.
-     // mcp-voice-hooks logic: `wait-for-utterances`
-     // We want to fetch utterances and if they exist, inject them.
+      // Action: Check for voice input. If found, inject it.
      
+      log('Calling /api/wait-for-utterances...');
      callApi('/api/wait-for-utterances', {}, (response) => {
+         log(`Wait response received: ${JSON.stringify(response)}`);
+
          if (response && response.success && response.utterances && response.utterances.length > 0) {
              // We have voice input!
-             // Inject it into Gemini.
-             // Strategy: Return a systemMessage describing the voice input.
              const text = response.utterances.map(u => u.text).join(' ');
+             const message = `User voice input: "${text}"`;
+             log(`Injecting system message: ${message}`);
+
+             // Inject it into Gemini.
              console.log(JSON.stringify({
-                 systemMessage: `User voice input: "${text}"`
+                 systemMessage: message
              }));
          } else {
+             log('No voice input found or timeout.');
              // No input, do nothing
              console.log('{}');
          }
      });
 
   } else if (event === 'AfterModel') {
+      log('Entering AfterModel logic...');
       // Gemini: AfterModel
       // Action: Speak the response.
-      // Payload has `modelResponse` or `response.content`.
       
       let textToSpeak = "";
       
@@ -83,16 +101,18 @@ function handleEvent(event, payload) {
       }
 
       if (textToSpeak) {
-          // Send to TTS API
+          log(`Sending text to TTS (length: ${textToSpeak.length})...`);
           callApi('/api/speak', { text: textToSpeak }, () => {
+              log('TTS request sent.');
               console.log('{}');
           });
       } else {
+          log('No text found to speak.');
           console.log('{}');
       }
 
   } else {
-      // Unknown event, ignore
+      log(`Ignoring unknown event: ${event}`);
       console.log('{}');
   }
 }
@@ -108,7 +128,7 @@ function callApi(path, body, callback) {
             'Content-Type': 'application/json',
             'Content-Length': data.length
         },
-        timeout: 5000 // 5s timeout
+        timeout: 65000 // 65s timeout (slightly longer than server wait)
     };
 
     const req = http.request(options, (res) => {
@@ -118,18 +138,19 @@ function callApi(path, body, callback) {
             try {
                 callback(JSON.parse(responseData));
             } catch (e) {
+                log(`Error parsing API response: ${e.message}`);
                 callback(null);
             }
         });
     });
 
     req.on('error', (e) => {
-        // Silently fail if server is down (don't break Gemini)
-        // console.error(`Problem with request: ${e.message}`);
+        log(`API Request failed: ${e.message}`);
         callback(null);
     });
     
     req.on('timeout', () => {
+        log('API Request timed out.');
         req.destroy();
         callback(null);
     });
