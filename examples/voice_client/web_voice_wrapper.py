@@ -1,11 +1,15 @@
 import re
-import re
 import asyncio
 import os
 import sys
 import pty
+import tty
+import termios
+import struct
+import fcntl
 import socketio
 import argparse
+import signal
 from rich.console import Console
 
 # --- Configuration ---
@@ -19,41 +23,69 @@ class WebVoiceWrapper:
         self.sio = socketio.AsyncClient()
         self.master_fd = None
         self.process = None
+        self.tts_buffer = ""
+        self.tts_timer = None
+        self.old_tty_attrs = None
 
     async def connect_server(self):
         try:
             await self.sio.connect(VOICE_SERVER_URL)
-            console.print(f"[green]Connected to Voice Bridge at {VOICE_SERVER_URL}[/green]")
-        except Exception as e:
-            console.print(f"[bold red]Connection Error:[/bold red] {e}")
+            # We can't use console.print easily in raw mode, so we just rely on connection state
+        except Exception:
             sys.exit(1)
             
         @self.sio.on('user_message')
         async def on_user_message(data):
-            console.print(f"[bold green]Voice Input:[/bold green] {data}")
             if self.master_fd:
                 # Write to PTY (simulates user typing)
                 os.write(self.master_fd, (data + "\n").encode())
 
-    def read_from_pty(self):
-        """Read output from the PTY master."""
+    def _set_pty_size(self):
+        """Sync PTY size with host terminal size."""
+        if not self.master_fd:
+            return
         try:
-            data = os.read(self.master_fd, 1024)
+            rows, cols, x, y = struct.unpack("HHHH", fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0)))
+            fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, x, y))
+        except Exception:
+            pass
+
+    async def _send_tts(self):
+        """Send buffered text to TTS."""
+        if self.tts_buffer.strip():
+            # Basic heuristic: ignore short prompts or noise? 
+            # For now, send everything that looks like text.
+            await self.sio.emit('bot_output', self.tts_buffer.strip())
+        self.tts_buffer = ""
+        self.tts_timer = None
+
+    def read_from_pty(self):
+        """Read from PTY master, write to stdout, and buffer for TTS."""
+        try:
+            data = os.read(self.master_fd, 4096)
             if data:
-                text = data.decode(errors='replace').strip()
-                # Filter out raw echo if needed, or just send everything
-                # Basic cleaning to remove ANSI codes could be added here if needed for TTS
-                if text:
-                    console.print(f"[dim]{text}[/dim]")
-                    # Emit to server for TTS
-                    # We use create_task because this is called from add_reader callback
+                # 1. Passthrough to real stdout (Raw bytes)
+                os.write(sys.stdout.fileno(), data)
+                
+                # 2. Process for TTS (Sniffing)
+                text_chunk = data.decode(errors='replace')
+                # Strip ANSI codes
+                clean_chunk = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text_chunk)
+                
+                if clean_chunk:
+                    self.tts_buffer += clean_chunk
                     
-                    # Strip ANSI codes for TTS
-                    clean_text = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text)
-                    if clean_text.strip():
-                        asyncio.create_task(self.sio.emit('bot_output', clean_text.strip()))
+                    # Debounce/Batch TTS sending
+                    if self.tts_timer:
+                        self.tts_timer.cancel()
+                    self.tts_timer = asyncio.create_task(self._delayed_tts())
+
         except OSError:
             pass
+
+    async def _delayed_tts(self):
+        await asyncio.sleep(0.5) # Wait for output to settle (e.g. half a second silence)
+        await self._send_tts()
 
     def read_from_stdin(self):
         """Read from host stdin and write to PTY."""
@@ -65,27 +97,31 @@ class WebVoiceWrapper:
             pass
 
     async def run_subprocess(self):
-        """Runs the CLI command in a PTY."""
-        console.print(f"[bold blue]Launching CLI in PTY:[/bold blue] {self.command}")
+        # Save TTY settings
+        if sys.stdin.isatty():
+            self.old_tty_attrs = termios.tcgetattr(sys.stdin)
+            tty.setraw(sys.stdin.fileno())
         
-        # Create pseudo-terminal
+        # Determine shell/command
+        # If command is a string like "gemini -v", we split it for pty.spawn-like behavior if needed,
+        # but asyncio needs list or string. Shell=True allows string.
+        
         master, slave = pty.openpty()
         self.master_fd = master
+        
+        self._set_pty_size()
+        signal.signal(signal.SIGWINCH, lambda signum, frame: self._set_pty_size())
 
-        # Start subprocess attached to the PTY slave
         self.process = await asyncio.create_subprocess_shell(
             self.command,
             stdin=slave,
             stdout=slave,
             stderr=slave,
-            preexec_fn=os.setsid # Create new session
+            preexec_fn=os.setsid 
         )
-        os.close(slave) # Host doesn't need the slave fd
+        os.close(slave)
 
-        # Register PTY reader with asyncio loop
         loop = asyncio.get_running_loop()
-        
-        # Register readers
         loop.add_reader(self.master_fd, self.read_from_pty)
         loop.add_reader(sys.stdin.fileno(), self.read_from_stdin)
 
@@ -95,9 +131,23 @@ class WebVoiceWrapper:
             loop.remove_reader(self.master_fd)
             loop.remove_reader(sys.stdin.fileno())
             os.close(self.master_fd)
+            
+            # Restore TTY settings
+            if self.old_tty_attrs:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_tty_attrs)
+            
+            # Reset cursor / clear artifacts if needed
+            print("Wrapper exited.")
 
     async def run(self):
-        await self.connect_server()
+        # Connect first (while still in normal TTY mode for print)
+        try:
+            await self.sio.connect(VOICE_SERVER_URL)
+            print(f"Connected to Voice Bridge at {VOICE_SERVER_URL}")
+        except Exception as e:
+            print(f"Connection Error: {e}")
+            sys.exit(1)
+
         await self.run_subprocess()
         await self.sio.disconnect()
 
@@ -110,4 +160,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(wrapper.run())
     except KeyboardInterrupt:
-        pass
+        # Restore TTY if forced stopped
+        if sys.stdin.isatty():
+             # We might need to handle this better, but termios usually persists
+             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, termios.tcgetattr(sys.stdin)) # Reset logic simplified
+             pass
