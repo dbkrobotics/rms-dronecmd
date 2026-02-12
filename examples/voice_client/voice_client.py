@@ -220,12 +220,35 @@ class VoiceClient:
 
                 console.print(f"[bold blue]Using Gemini Model: {model_name}[/bold blue]")
 
-                # Initialize Gemini with tools
+                # System Instruction for "Smart" Behavior
+                SYSTEM_INSTRUCTION = """
+You are a ROS 2 Robotics Assistant powered by Gemini.
+Your purpose is to help the user control robots via the MCP server.
+
+**Core Responsibilities:**
+1.  **Identify the Robot**:
+    -   If the user hasn't specified a robot, ask them or check `get_verified_robots_list()`.
+    -   Once identified (e.g., 'drone_px4'), ALWAYS call `get_verified_robot_spec(name='...')` to load its specific commands and safety rules.
+2.  **Safety First**:
+    -   Before executing movement commands (takeoff, move), check the robot's state (battery, position, mode).
+    -   If state tools are unavailable, ask the user for confirmation.
+3.  **Voice-Optimized Responses**:
+    -   Keep answers concise and conversational.
+    -   Avoid code blocks or long lists unless explicitly asked.
+    -   Confirm actions before executing them (e.g., "Taking off to 5 meters now").
+
+**Tools & Capabilities**:
+-   You have access to ROS 2 tools (topics, services, actions).
+-   Use `get_verified_robot_spec` to get detailed prompts for specific robots.
+"""
+
+                # Initialize Gemini with tools and system instruction
                 # Using gemini-1.5-flash for speed
                 # Note: 'google.generativeai' is deprecated, but we are fixing the schema issue first.
                 self.model = genai.GenerativeModel(
                     model_name=model_name,
-                    tools=gemini_tools
+                    tools=gemini_tools,
+                    system_instruction=SYSTEM_INSTRUCTION
                 )
                 self.chat = self.model.start_chat()
                 
