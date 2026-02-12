@@ -1,6 +1,6 @@
-mcp
+fastapi
+uvicorn
+python-socketio
 google-generativeai
-SpeechRecognition
-gTTS
-pyaudio
-rich==13.9.4
+mcp
+rich

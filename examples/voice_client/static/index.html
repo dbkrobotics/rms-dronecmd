@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemini Voice Console</title>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --text-color: #e2e8f0;
+            --accent-color: #3b82f6;
+            --secondary-bg: #1e293b;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+
+        .container {
+            text-align: center;
+            background-color: var(--secondary-bg);
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            max-width: 600px;
+            width: 90%;
+        }
+
+        h1 {
+            margin-bottom: 0.5rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #60a5fa, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        #status {
+            font-size: 1.25rem;
+            margin-bottom: 2rem;
+            font-weight: 500;
+            color: var(--accent-color);
+            min-height: 1.5em; /* Prevent layout shift */
+        }
+
+        .visualizer {
+            width: 100%;
+            height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            margin-bottom: 2rem;
+        }
+
+        .bar {
+            width: 6px;
+            height: 10px;
+            background-color: var(--accent-color);
+            border-radius: 3px;
+            transition: height 0.1s ease;
+        }
+
+        .bar.active {
+            animation: pulse 0.5s infinite alternate;
+        }
+
+        @keyframes pulse {
+            0% { height: 10px; opacity: 0.5; }
+            100% { height: 40px; opacity: 1; }
+        }
+
+        #transcript {
+            font-size: 1.1rem;
+            line-height: 1.6;
+            margin-bottom: 1.5rem;
+            min-height: 3em;
+            color: #cbd5e1;
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+
+        button {
+            background-color: var(--secondary-bg);
+            color: var(--text-color);
+            border: 1px solid var(--accent-color);
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            background-color: var(--accent-color);
+            color: white;
+        }
+
+        button.active {
+            background-color: var(--error-color);
+            border-color: var(--error-color);
+            color: white;
+        }
+        
+        .log-container {
+            margin-top: 2rem;
+            text-align: left;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: #94a3b8;
+            max-height: 100px;
+            overflow-y: auto;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            padding-top: 1rem;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Gemini Voice Bridge</h1>
+        <div id="status">Connecting...</div>
+
+        <div class="visualizer" id="visualizer">
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+            <div class="bar"></div>
+        </div>
+
+        <div id="transcript">Click "Start Listening" to begin.</div>
+
+        <div class="controls">
+            <button id="toggleBtn">Start Listening</button>
+        </div>
+        
+        <div class="log-container" id="logs"></div>
+    </div>
+
+    <script>
+        const socket = io();
+        const statusEl = document.getElementById('status');
+        const transcriptEl = document.getElementById('transcript');
+        const toggleBtn = document.getElementById('toggleBtn');
+        const visualizer = document.getElementById('visualizer');
+        const logsEl = document.getElementById('logs');
+
+        let isListening = false;
+        let recognition = null;
+        let synthesis = window.speechSynthesis;
+
+        function log(msg) {
+            const div = document.createElement('div');
+            div.textContent = `> ${msg}`;
+            logsEl.prepend(div); // Newest top
+        }
+
+        // --- Socket.IO ---
+        socket.on('connect', () => {
+            statusEl.textContent = "Connected to Server";
+            log("Socket connected");
+        });
+
+        socket.on('disconnect', () => {
+            statusEl.textContent = "Disconnected";
+            statusEl.style.color = "var(--error-color)";
+            log("Socket disconnected");
+        });
+
+        socket.on('speak_message', (text) => {
+            log(`Speaking: "${text}"`);
+            speak(text);
+        });
+
+        // --- Speech Recognition ---
+        if ('webkitSpeechRecognition' in window) {
+            recognition = new webkitSpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false; // Only final results
+            recognition.lang = 'en-US'; // Default to English
+
+            recognition.onstart = () => {
+                isListening = true;
+                statusEl.textContent = "Listening...";
+                statusEl.style.color = "var(--success-color)";
+                toggleBtn.textContent = "Stop Listening";
+                toggleBtn.classList.add('active');
+                visualizer.childNodes.forEach(bar => bar.classList?.add('active'));
+            };
+
+            recognition.onend = () => {
+                if (isListening) {
+                    // Auto-restart if it stopped but we want to keep listening
+                    recognition.start(); 
+                } else {
+                    statusEl.textContent = "Stopped";
+                    statusEl.style.color = "var(--text-color)";
+                    toggleBtn.textContent = "Start Listening";
+                    toggleBtn.classList.remove('active');
+                    visualizer.childNodes.forEach(bar => bar.classList?.remove('active'));
+                }
+            };
+
+            recognition.onresult = (event) => {
+                const result = event.results[event.results.length - 1];
+                if (result.isFinal) {
+                    const text = result[0].transcript.trim();
+                    transcriptEl.textContent = `You: "${text}"`;
+                    socket.emit('audio_input', text);
+                    log(`Sent: "${text}"`);
+                }
+            };
+
+            recognition.onerror = (event) => {
+                log(`Recognition error: ${event.error}`);
+                if (event.error === 'not-allowed') {
+                    alert("Microphone access denied. Please allow microphone access.");
+                    isListening = false;
+                }
+            };
+
+        } else {
+            alert("Web Speech API not supported in this browser. Please use Chrome or Safari.");
+        }
+
+        // --- Text to Speech ---
+        function speak(text) {
+            // Stop listening temporarily while speaking to avoid self-loop
+            // optional: depending on use case. For now, we'll keep listening but maybe debounce.
+            
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.onstart = () => {
+                statusEl.textContent = "Speaking...";
+                visualizer.childNodes.forEach(bar => bar.classList?.add('active'));
+            };
+            utterance.onend = () => {
+                statusEl.textContent = isListening ? "Listening..." : "Idle";
+                if (!isListening) {
+                    visualizer.childNodes.forEach(bar => bar.classList?.remove('active'));
+                }
+            };
+            synthesis.speak(utterance);
+        }
+
+        // --- Controls ---
+        toggleBtn.addEventListener('click', () => {
+            if (isListening) {
+                isListening = false;
+                recognition.stop();
+            } else {
+                recognition.start();
+            }
+        });
+
+        // Initialize visualizer bars
+        visualizer.innerHTML = '';
+        for(let i=0; i<5; i++) {
+            const bar = document.createElement('div');
+            bar.className = 'bar';
+            // Random animation delay for wave effect
+            bar.style.animationDelay = `${i * 0.1}s`;
+            visualizer.appendChild(bar);
+        }
+
+    </script>
+</body>
+</html>
