@@ -277,18 +277,8 @@ class VoiceClient:
                     if response.text:
                         self.speak(response.text)
 
-                # --- Auto-Initialization ---
-                self.speak("System connected. Initializing using default configuration...")
-                init_prompt = "I am controlling a drone_px4. Connect to localhost and load the drone_px4 robot configuration."
-                
-                try:
-                    init_response = self.chat.send_message(init_prompt)
-                    await process_response(init_response)
-                except Exception as e:
-                    console.print(f"[bold red]Init Error:[/bold red] {e}")
-                    self.speak("Initialization failed.")
-
-                self.speak("Ready for commands.")
+                # --- Auto-Initialization Removed (User requested manual control) ---
+                self.speak("System connected. Ready for commands.")
                 
                 while True:
                     with Live(Spinner("dots", text="Ready"), refresh_per_second=10) as live_status:
