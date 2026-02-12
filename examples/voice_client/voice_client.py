@@ -71,10 +71,10 @@ class VoiceClient:
             live_status.update(Spinner("dots", text="Adjusting for ambient noise..."))
             self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
             
-            live_status.update(Spinner("mic", text="Listening..."))
+            live_status.update(Spinner("dots", text="Listening..."))
             try:
                 audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=10)
-                live_status.update(Spinner("bouncingBall", text="Transcribing..."))
+                live_status.update(Spinner("dots", text="Transcribing..."))
                 text = self.recognizer.recognize_google(audio)
                 console.print(f"[bold green]User:[/bold green] {text}")
                 return text
@@ -183,7 +183,7 @@ class VoiceClient:
                             self.speak("Goodbye.")
                             break
 
-                        live_status.update(Spinner("earth", text="Thinking..."))
+                        live_status.update(Spinner("moon", text="Thinking..."))
                         
                         # Send to Gemini
                         response = self.chat.send_message(user_input)
