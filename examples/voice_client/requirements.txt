@@ -3,4 +3,4 @@ google-generativeai
 SpeechRecognition
 gTTS
 pyaudio
-rich
+rich==13.9.4
