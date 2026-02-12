@@ -111,14 +111,34 @@ class VoiceClient:
                 for tool in tools_response.tools:
                     tool_map[tool.name] = tool
                     
-                    # Sanitize schema for Gemini
                     def sanitize_schema(schema):
                         if not isinstance(schema, dict):
                             return schema
                         new_schema = schema.copy()
                         
-                        for field in ["additionalProperties", "title", "$schema", "required"]: 
-                            if field in new_schema and field != "required":
+                        # Handle combinatorial types by picking the first valid option
+                        # This simplifies complex schemas (like Optional[str]) for Gemini
+                        for key in ["anyOf", "oneOf", "allOf"]:
+                            if key in new_schema:
+                                options = new_schema[key]
+                                selected = None
+                                if isinstance(options, list):
+                                    for opt in options:
+                                        # Prefer non-null types
+                                        if opt.get("type", "").lower() != "null":
+                                            selected = opt
+                                            break
+                                    if not selected and options:
+                                        selected = options[0]
+                                
+                                if selected:
+                                    # Merge selected option
+                                    new_schema.update(sanitize_schema(selected))
+                                del new_schema[key]
+
+                        # Remove fields unsupported by Gemini
+                        for field in ["additionalProperties", "title", "$schema", "default"]: 
+                            if field in new_schema:
                                 del new_schema[field]
                         
                         if "type" in new_schema and isinstance(new_schema["type"], str):
