@@ -228,8 +228,67 @@ class VoiceClient:
                     tools=gemini_tools
                 )
                 self.chat = self.model.start_chat()
+                
+                # Helper to handle Gemini responses and tool calls
+                async def process_response(response, retry_delay=2, max_retries=3):
+                    if not response:
+                        return
 
-                self.speak("System connected. Ready for commands.")
+                    # Check for function calls
+                    for part in response.parts:
+                        if fn := part.function_call:
+                            tool_name_gemini = fn.name
+                            tool_name_mcp = tool_name_gemini.replace("_", "-")
+                            args = dict(fn.args)
+                            
+                            self.speak(f"Executing {tool_name_mcp}...")
+                            with Live(Spinner("runner", text=f"Executing {tool_name_mcp}..."), refresh_per_second=10) as live_exec:
+                                try:
+                                    result = await session.call_tool(tool_name_mcp, arguments=args)
+                                    
+                                    # Retry loop for tool output
+                                    for attempt in range(max_retries):
+                                        try:
+                                            # Send tool result back to Gemini
+                                            tool_response = self.chat.send_message(
+                                                genai.protos.Content(
+                                                    parts=[genai.protos.Part(function_response=genai.protos.FunctionResponse(
+                                                        name=fn.name,
+                                                        response={"result": result.content}
+                                                    ))]
+                                                )
+                                            )
+                                            # Process the follow-up response recursively
+                                            await process_response(tool_response)
+                                            break
+                                        except Exception as e:
+                                            if "429" in str(e):
+                                                if attempt < max_retries - 1:
+                                                    time.sleep(retry_delay * (2 ** attempt))
+                                                    continue
+                                            console.print(f"[bold red]Error sending tool result:[/bold red] {e}")
+                                            break
+                                            
+                                except Exception as e:
+                                    console.print(f"[bold red]Tool Execution Error:[/bold red] {e}")
+                                    self.speak("There was an error executing the tool.")
+
+                    # Final response text
+                    if response.text:
+                        self.speak(response.text)
+
+                # --- Auto-Initialization ---
+                self.speak("System connected. Initializing using default configuration...")
+                init_prompt = "I am controlling a drone_px4. Connect to localhost and load the drone_px4 robot configuration."
+                
+                try:
+                    init_response = self.chat.send_message(init_prompt)
+                    await process_response(init_response)
+                except Exception as e:
+                    console.print(f"[bold red]Init Error:[/bold red] {e}")
+                    self.speak("Initialization failed.")
+
+                self.speak("Ready for commands.")
                 
                 while True:
                     with Live(Spinner("dots", text="Ready"), refresh_per_second=10) as live_status:
@@ -264,60 +323,7 @@ class VoiceClient:
                                 self.speak("I'm having trouble connecting to the AI service.")
                                 break
                         
-                        if not response:
-                            continue
-                        
-                        # Check for function calls
-                        for part in response.parts:
-                            if fn := part.function_call:
-                                tool_name_gemini = fn.name
-                                tool_name_mcp = tool_name_gemini.replace("_", "-") # simplistic reverse mapping
-                                args = dict(fn.args)
-                                
-                                # Pre-action feedback
-                                self.speak(f"Executing {tool_name_mcp}...")
-                                live_status.update(Spinner("runner", text=f"Executing {tool_name_mcp}..."))
-                                
-                                try:
-                                    result = await session.call_tool(tool_name_mcp, arguments=args)
-                                    
-                                    # Send result back to Gemini
-                                    # Construct response based on Gemini's expectation for tool outputs
-                                    # (Needs specific format mapping, simplifiying here)
-                                    tool_response = {
-                                        "name": fn.name,
-                                        "response": {"result": result.content}
-                                    }
-                                    
-                                    # Retry loop for tool output submission as well
-                                    for attempt in range(max_retries):
-                                        try:
-                                            response = self.chat.send_message(
-                                                genai.protos.Content(
-                                                    parts=[genai.protos.Part(function_response=genai.protos.FunctionResponse(
-                                                        name=fn.name,
-                                                        response={"result": result.content} # Simplified
-                                                    ))]
-                                                )
-                                            )
-                                            break
-                                        except Exception as e:
-                                            if "429" in str(e):
-                                                if attempt < max_retries - 1:
-                                                    time.sleep(retry_delay * (2 ** attempt))
-                                                    continue
-                                            console.print(f"[bold red]Error sending tool result:[/bold red] {e}")
-                                            break
-                                    
-                                except Exception as e:
-                                    console.print(f"[bold red]Tool Execution Error:[/bold red] {e}")
-                                    self.speak("There was an error executing the tool.")
-                                    # Need to potentially inform Gemini of error loop? 
-                                    # consistent conversation state might be lost here without proper error injection.
-
-                        # Final response
-                        if response and response.text:
-                            self.speak(response.text)
+                        await process_response(response)
 
 if __name__ == "__main__":
     client = VoiceClient()
