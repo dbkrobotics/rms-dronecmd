@@ -110,13 +110,27 @@ class VoiceClient:
                 
                 for tool in tools_response.tools:
                     tool_map[tool.name] = tool
+                    
+                    # Sanitize schema for Gemini
+                    def sanitize_schema(schema):
+                        if not isinstance(schema, dict):
+                            return schema
+                        new_schema = schema.copy()
+                        if "type" in new_schema and isinstance(new_schema["type"], str):
+                            new_schema["type"] = new_schema["type"].upper()
+                        if "properties" in new_schema:
+                            new_schema["properties"] = {k: sanitize_schema(v) for k, v in new_schema["properties"].items()}
+                        if "items" in new_schema:
+                            new_schema["items"] = sanitize_schema(new_schema["items"])
+                        return new_schema
+
+                    sanitized_input_schema = sanitize_schema(tool.inputSchema)
+                    
                     # Construct function declaration for Gemini
-                    # This is a simplified representation. 
-                    # In a robust app, we'd map JSON schema types fully.
                     func_decl = {
                         "name": tool.name.replace("-", "_"), # Gemini prefers underscores
                         "description": tool.description,
-                        "parameters": tool.inputSchema
+                        "parameters": sanitized_input_schema
                     }
                     gemini_tools.append(func_decl)
 
@@ -124,6 +138,7 @@ class VoiceClient:
 
                 # Initialize Gemini with tools
                 # Using gemini-1.5-flash for speed
+                # Note: 'google.generativeai' is deprecated, but we are fixing the schema issue first.
                 self.model = genai.GenerativeModel(
                     model_name='gemini-1.5-flash',
                     tools=gemini_tools
