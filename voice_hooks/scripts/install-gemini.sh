@@ -21,18 +21,17 @@ echo "Please add the following configuration to your Gemini CLI config file:"
 echo "Location: ~/.gemini/config.json"
 echo ""
 echo "---------------------------------------------------------"
-cat <<EOF
 {
   "hooks": {
     "BeforeAgent": [
       {
-        "command": "node $ADAPTER_SCRIPT BeforeAgent",
+        "command": "$REPO_DIR/scripts/before_agent.sh",
         "timeout": 60000
       }
     ],
     "AfterAgent": [
       {
-        "command": "node $ADAPTER_SCRIPT AfterAgent",
+        "command": "$REPO_DIR/scripts/after_agent.sh",
         "timeout": 10000
       }
     ]
