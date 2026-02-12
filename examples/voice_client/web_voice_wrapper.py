@@ -36,6 +36,7 @@ class WebVoiceWrapper:
             
         @self.sio.on('user_message')
         async def on_user_message(data):
+            console.print(f"[bold magenta]Wrapper received: {data}[/bold magenta]")
             if self.master_fd:
                 # Write to PTY (simulates user typing)
                 # Use \n for submission, explicitly encode as utf-8
