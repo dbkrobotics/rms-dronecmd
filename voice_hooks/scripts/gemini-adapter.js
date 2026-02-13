@@ -1,13 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Gemini Hook Adapter for mcp-voice-hooks
- * 
- * Bridges Gemini CLI hook events to the mcp-voice-hooks Unified Server.
- * 
- * Usage: node gemini-adapter.js <event-name>
- */
-
 import http from 'http';
 import fs from 'fs';
 
@@ -18,20 +10,19 @@ const LOG_FILE = '/tmp/gemini_hook_adapter.log';
 const EVENT = process.argv[2];
 
 if (!EVENT) {
-  console.error("Error: No event specified.");
-  process.exit(1);
+    console.error("Error: No event specified.");
+    process.exit(1);
 }
 
 function log(msg) {
     try {
         const timestamp = new Date().toISOString();
+        console.error(`[${timestamp}] [${EVENT}] ${msg}`);
         fs.appendFileSync(LOG_FILE, `[${timestamp}] [${EVENT}] ${msg}\n`);
     } catch (e) {
-        // Ignore logging errors
     }
 }
 
-// Global Error Handlers
 process.on('uncaughtException', (err) => {
     log(`UNCAUGHT EXCEPTION: ${err.message}\n${err.stack}`);
     process.exit(1);
@@ -44,16 +35,15 @@ process.on('unhandledRejection', (reason, promise) => {
 
 log(`Hook triggered. Checking server connectivity...`);
 
-// Check connectivity first
 const checkReq = http.request({
     hostname: SERVER_HOST,
     port: SERVER_PORT,
-    path: '/api/utterances/status', // Simple GET endpoint
+    path: '/api/utterances/status',
     method: 'GET',
     timeout: 2000
 }, (res) => {
     log(`Server is reachable (Status: ${res.statusCode})`);
-    checkReq.destroy(); // Prevent timeout from firing later
+    checkReq.destroy();
     startProcessing();
 });
 
@@ -72,11 +62,9 @@ checkReq.end();
 
 function startProcessing() {
     log('Starting input processing...');
-    // Read stdin (Hook Payload)
     let inputData = '';
     let processed = false;
 
-    // Set a timeout to avoid hanging if stdin doesn't close
     const inputTimeout = setTimeout(() => {
         if (!processed) {
             log('Timeout waiting for stdin. Processing with collected data...');
@@ -91,8 +79,8 @@ function startProcessing() {
 
     process.stdin.on('end', () => {
         if (!processed) {
-        clearTimeout(inputTimeout);
-        processInput();
+            clearTimeout(inputTimeout);
+            processInput();
         }
     });
 
@@ -104,7 +92,6 @@ function startProcessing() {
             handleEvent(EVENT, payload);
         } catch (e) {
             log(`Error parsing payload: ${e.message}`);
-            // If invalid JSON or empty, just proceed with empty object
             handleEvent(EVENT, {});
         }
     }
@@ -112,71 +99,65 @@ function startProcessing() {
 
 function handleEvent(event, payload) {
     log(`Handling event: ${event}`);
-  
-  if (event === 'BeforeAgent') {
-      log('Entering BeforeAgent logic...');
-     // Gemini: BeforeAgent
-      // Action: Check for voice input. If found, inject it.
-     
-      // FORCE ACTIVATE VOICE INPUT
-      // Because the server defaults to inactive, we must tell it we are listening.
-      log('Forcing voice input activation...');
-      callApi('/api/voice-input-state', { active: true }, (activateResp) => {
-          log(`Voice activation response: ${JSON.stringify(activateResp)}`);
 
-         log('Calling /api/wait-for-utterances...');
-         callApi('/api/wait-for-utterances', {}, (response) => {
-             log(`Wait response received: ${JSON.stringify(response)}`);
+    if (event === 'BeforeAgent') {
+        log('Entering BeforeAgent logic...');
+        log(`Payload: ${JSON.stringify(payload)}`);
 
-             if (response && response.success && response.utterances && response.utterances.length > 0) {
-                 // We have voice input!
-                 const text = response.utterances.map(u => u.text).join(' ');
-                 const message = `User voice input: "${text}"`;
-                 log(`Injecting system message: ${message}`);
 
-                 // Inject it into Gemini using hookSpecificOutput.additionalContext
-                 console.log(JSON.stringify({
-                     hookSpecificOutput: {
-                         additionalContext: message
-                     },
-                     // Keep systemMessage as backup/visibility if supported
-                     systemMessage: message
-                 }));
-             } else {
-                 log('No voice input found or timeout.');
-                 // No input, do nothing
-                 console.log('{}');
-             }
-         });
-     });
+        if (payload.prompt && payload.prompt.trim().length > 0) {
+            console.log('{}');
+            return;
+        }
+        log('Forcing voice input activation...');
+        callApi('/api/voice-input-state', { active: true }, (activateResp) => {
+            log(`Voice activation response: ${JSON.stringify(activateResp)}`);
 
-  } else if (event === 'AfterAgent') {
-      log('Entering AfterAgent logic...');
-      // Gemini: AfterAgent (replaces AfterModel for better TTS)
-      // Action: Speak the full response.
-      
-      let textToSpeak = "";
-      
-      // Input field: prompt_response (string) - The final text generated by the agent
-      if (payload.prompt_response) {
-          textToSpeak = payload.prompt_response;
-      }
+            log('Calling /api/wait-for-utterances...');
+            callApi('/api/wait-for-utterances', {}, (response) => {
+                log(`Wait response received: ${JSON.stringify(response)}`);
 
-      if (textToSpeak) {
-          log(`Sending text to TTS (length: ${textToSpeak.length})...`);
-          callApi('/api/speak', { text: textToSpeak }, () => {
-              log('TTS request sent.');
-              console.log('{}');
-          });
-      } else {
-          log('No text found to speak in AfterAgent payload.');
-          console.log('{}');
-      }
+                if (response && response.success && response.utterances && response.utterances.length > 0) {
+                    const text = response.utterances.map(u => u.text).join(' ');
+                    const message = `User voice input: "${text}"`;
+                    log(`Injecting system message: ${message}`);
 
-  } else {
-      log(`Ignoring unknown event: ${event}`);
-      console.log('{}');
-  }
+                    console.log(JSON.stringify({
+                        hookSpecificOutput: {
+                            additionalContext: message
+                        },
+                        systemMessage: message
+                    }));
+                } else {
+                    log('No voice input found or timeout.');
+                    console.log('{}');
+                }
+            });
+        });
+    } else if (event === 'AfterAgent') {
+        log('Entering AfterAgent logic...');
+
+        let textToSpeak = "";
+
+        if (payload.prompt_response) {
+            textToSpeak = payload.prompt_response;
+        }
+
+        if (textToSpeak) {
+            log(`Sending text to TTS (length: ${textToSpeak.length})...`);
+            callApi('/api/speak', { text: textToSpeak }, () => {
+                log('TTS request sent.');
+                console.log('{}');
+            });
+        } else {
+            log('No text found to speak in AfterAgent payload.');
+            console.log('{}');
+        }
+
+    } else {
+        log(`Ignoring unknown event: ${event}`);
+        console.log('{}');
+    }
 }
 
 function callApi(path, body, callback) {
@@ -190,7 +171,7 @@ function callApi(path, body, callback) {
             'Content-Type': 'application/json',
             'Content-Length': data.length
         },
-        timeout: 65000 // 65s timeout (slightly longer than server wait)
+        timeout: 65000
     };
 
     const req = http.request(options, (res) => {
@@ -210,7 +191,7 @@ function callApi(path, body, callback) {
         log(`API Request failed: ${e.message}`);
         callback(null);
     });
-    
+
     req.on('timeout', () => {
         log('API Request timed out.');
         req.destroy();
