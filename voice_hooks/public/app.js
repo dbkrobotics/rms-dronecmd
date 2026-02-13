@@ -619,157 +619,100 @@ class MessengerClient {
     }
 
     async startVoiceDictation() {
-        if (!this.recognition) {
-            alert('Speech recognition not supported in this browser');
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert('Audio recording not supported in this browser');
             return;
         }
 
         try {
-            if (this.isInterimText) {
-                this.messageInput.value = '';
-                this.isInterimText = false;
-            }
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.mediaRecorder = new MediaRecorder(stream);
+            this.audioChunks = [];
 
-            this.recognition.start();
+            this.mediaRecorder.ondataavailable = (event) => {
+                this.audioChunks.push(event.data);
+            };
+
+            this.mediaRecorder.start();
             this.isListening = true;
             this.micBtn.classList.add('listening');
 
-            // Activate voice input when mic is on
+            // Activate voice input state
             await this.updateVoiceInputState(true);
+
+            this.debugLog('Started recording audio...');
         } catch (e) {
-            console.error('Failed to start recognition:', e);
-            alert('Failed to start speech recognition');
+            console.error('Failed to start recording:', e);
+            alert('Failed to start audio recording: ' + e.message);
         }
     }
 
     async stopVoiceDictation() {
-        if (this.recognition) {
+        if (this.mediaRecorder && this.isListening) {
             this.isListening = false;
-            this.recognition.stop();
             this.micBtn.classList.remove('listening');
 
-            // Send any accumulated text in the input
-            const text = this.messageInput.value.trim();
-            if (text) {
-                // In trigger mode, check for trigger word
-                if (this.sendMode === 'trigger') {
-                    if (this.containsTriggerWord(text)) {
-                        const textToSend = this.removeTriggerWord(text);
-                        await this.sendMessage(textToSend);
-                        this.messageInput.value = '';
-                    }
-                    // If no trigger word, keep text in input for user to continue
-                } else {
-                    // In automatic mode, send the text
-                    await this.sendMessage(text);
-                    this.messageInput.value = '';
-                }
-            }
+            // Create a promise to handle the onstop event
+            const stopPromise = new Promise((resolve) => {
+                this.mediaRecorder.onstop = resolve;
+            });
 
-            this.isInterimText = false;
-            this.messageInput.style.height = 'auto';
+            this.mediaRecorder.stop();
+            await stopPromise;
 
-            // Deactivate voice input when mic is turned off
+            // Stop all tracks
+            this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+
+            // Process the recorded audio
+            const audioBlob = new Blob(this.audioChunks, { type: 'audio/wav' });
+            await this.transcribeAudio(audioBlob);
+
+            this.audioChunks = [];
+
+            // Deactivate voice input state
             await this.updateVoiceInputState(false);
         }
     }
 
-    initializeSpeechRecognition() {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    async transcribeAudio(audioBlob) {
+        // Show loading state
+        const originalPlaceholder = this.messageInput.placeholder;
+        this.messageInput.placeholder = 'Transcribing audio...';
+        this.messageInput.disabled = true;
 
-        if (!SpeechRecognition) {
-            console.error('Speech recognition not supported');
-            this.micBtn.disabled = true;
-            return;
-        }
+        try {
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'recording.wav');
 
-        this.recognition = new SpeechRecognition();
-        this.recognition.continuous = true;
-        this.recognition.interimResults = true;
-        this.recognition.lang = 'en-US';
+            const response = await fetch(`${this.baseUrl}/api/transcribe`, {
+                method: 'POST',
+                body: formData
+            });
 
-        this.recognition.onresult = (event) => {
-            let interimTranscript = '';
-
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const transcript = event.results[i][0].transcript;
-
-                if (event.results[i].isFinal) {
-                    // User paused
-                    this.isInterimText = false;
-
-                    if (this.sendMode === 'automatic') {
-                        // Send immediately
-                        const finalText = this.messageInput.value.trim();
-                        this.sendMessage(finalText);
-                        this.messageInput.value = '';
-                        this.accumulatedText = '';
-                    } else {
-                        // Trigger word mode: accumulate until trigger word
-                        // Use the previously saved accumulated text (before interim was shown)
-                        const previouslyAccumulated = this.accumulatedText || '';
-                        const newUtterance = transcript.trim();
-
-                        // Check if this new utterance contains the trigger word
-                        if (this.containsTriggerWord(newUtterance)) {
-                            // Send everything accumulated plus this utterance (minus trigger word)
-                            const combined = previouslyAccumulated
-                                ? previouslyAccumulated + ' ' + newUtterance
-                                : newUtterance;
-                            const textToSend = this.removeTriggerWord(combined).trim();
-                            if (textToSend) {
-                                this.sendMessage(textToSend);
-                            }
-                            this.messageInput.value = '';
-                            this.accumulatedText = '';
-                        } else {
-                            // No trigger word - append with space (no newlines)
-                            const newAccumulated = previouslyAccumulated
-                                ? previouslyAccumulated + ' ' + newUtterance
-                                : newUtterance;
-                            this.messageInput.value = newAccumulated;
-                            this.accumulatedText = newAccumulated;
-                            this.autoGrowTextarea();
-                        }
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.text) {
+                    const text = data.text.trim();
+                    if (text) {
+                        this.sendMessage(text);
                     }
-                } else {
-                    // Still speaking
-                    interimTranscript += transcript;
                 }
+            } else {
+                console.error('Transcription failed:', await response.text());
             }
+        } catch (error) {
+            console.error('Error sending audio for transcription:', error);
+        } finally {
+            this.messageInput.placeholder = originalPlaceholder;
+            this.messageInput.disabled = false;
+            this.messageInput.focus();
+        }
+    }
 
-            if (interimTranscript) {
-                // In trigger mode, preserve accumulated text and append interim
-                if (this.sendMode === 'trigger' && this.accumulatedText) {
-                    // Show accumulated + interim with single space
-                    this.messageInput.value = this.accumulatedText + ' ' + interimTranscript.trim();
-                } else {
-                    // Show just interim
-                    this.messageInput.value = interimTranscript;
-                }
-
-                this.isInterimText = true;
-                this.autoGrowTextarea();
-            }
-        };
-
-        this.recognition.onerror = (event) => {
-            if (event.error !== 'no-speech') {
-                console.error('Speech error:', event.error);
-                this.stopVoiceDictation();
-            }
-        };
-
-        this.recognition.onend = () => {
-            if (this.isListening) {
-                try {
-                    this.recognition.start();
-                } catch (e) {
-                    console.error('Failed to restart recognition:', e);
-                    this.stopVoiceDictation();
-                }
-            }
-        };
+    // initializeSpeechRecognition is no longer used but kept empty to avoid breaking init chain
+    initializeSpeechRecognition() {
+        // Legacy SpeechRecognition functionality removed in favor of Whisper API
+        console.log('Using MediaRecorder + Whisper API for voice input');
     }
 
     containsTriggerWord(text) {

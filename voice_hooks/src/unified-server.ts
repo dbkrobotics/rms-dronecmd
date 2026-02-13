@@ -15,6 +15,18 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import multer from 'multer';
+import fs from 'fs';
+import OpenAI from 'openai';
+import os from 'os';
+
+// Configure multer for temporary file storage
+const upload = multer({ dest: os.tmpdir() });
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -163,6 +175,46 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // API Routes
+
+// API for audio transcription using OpenAI Whisper
+app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Response): Promise<void> => {
+  if (!req.file) {
+    res.status(400).json({ error: 'No audio file uploaded' });
+    return;
+  }
+
+  const tempFilePath = req.file.path;
+
+  try {
+    debugLog(`[Transcribe] Received audio file: ${req.file.originalname} (${req.file.size} bytes)`);
+
+    const translation = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(tempFilePath),
+      model: 'whisper-1',
+    });
+
+    const text = translation.text;
+    debugLog(`[Transcribe] Transcription result: "${text}"`);
+
+    res.json({
+      success: true,
+      text: text
+    });
+  } catch (error: any) {
+    debugLog(`[Transcribe] Error during transcription: ${error.message}`);
+    res.status(500).json({
+      error: 'Transcription failed',
+      details: error.message
+    });
+  } finally {
+    // Clean up temp file
+    if (fs.existsSync(tempFilePath)) {
+      fs.unlink(tempFilePath, (err) => {
+        if (err) debugLog(`[Transcribe] Error deleting temp file: ${err.message}`);
+      });
+    }
+  }
+});
 app.post('/api/potential-utterances', (req: Request, res: Response) => {
   const { text, timestamp } = req.body;
 
