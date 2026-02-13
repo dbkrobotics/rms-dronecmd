@@ -147,6 +147,29 @@ function buildEnglishTranscriptionPrompt(extraHints?: string): string {
   return parts.join(' ');
 }
 
+function inferUploadExtension(file: { originalname?: string; mimetype?: string }): string {
+  const byName = path.extname(file.originalname || '').replace('.', '').toLowerCase();
+  if (byName) {
+    return byName;
+  }
+
+  const mime = (file.mimetype || '').toLowerCase();
+  const mimeToExtension: Record<string, string> = {
+    'audio/webm': 'webm',
+    'audio/ogg': 'ogg',
+    'audio/oga': 'oga',
+    'audio/wav': 'wav',
+    'audio/x-wav': 'wav',
+    'audio/mpeg': 'mp3',
+    'audio/mp3': 'mp3',
+    'audio/mp4': 'm4a',
+    'audio/x-m4a': 'm4a',
+    'audio/flac': 'flac',
+  };
+
+  return mimeToExtension[mime] || 'webm';
+}
+
 function isTranscriptionLikelyNoise(text: string): boolean {
   const normalized = text.trim().toLowerCase();
   if (!normalized) {
@@ -395,14 +418,28 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
     return;
   }
 
-  const tempFilePath = req.file.path;
+  const uploadedTempPath = req.file.path;
+  const uploadExtension = inferUploadExtension({
+    originalname: req.file.originalname,
+    mimetype: req.file.mimetype,
+  });
+  const transcribeTempPath = `${uploadedTempPath}.${uploadExtension}`;
+  let tempFilePath = uploadedTempPath;
   const hints = typeof req.body?.hints === 'string' ? req.body.hints : '';
   const prompt = buildEnglishTranscriptionPrompt(hints);
   const candidateModels = Array.from(new Set([TRANSCRIBE_MODEL, 'whisper-1']));
 
   try {
+    try {
+      fs.copyFileSync(uploadedTempPath, transcribeTempPath);
+      tempFilePath = transcribeTempPath;
+    } catch (copyError) {
+      debugLog(`[Transcribe] Failed to create extension-preserving temp copy: ${copyError}`);
+      tempFilePath = uploadedTempPath;
+    }
+
     debugLog(
-      `[Transcribe] Received audio file: ${req.file.originalname} (${req.file.size} bytes), models=${candidateModels.join(',')}`
+      `[Transcribe] Received audio file: ${req.file.originalname} (${req.file.size} bytes), uploadMime=${req.file.mimetype}, transcribePath=${tempFilePath}, models=${candidateModels.join(',')}`
     );
 
     const candidates: Array<{ text: string; score: number; model: string; attempt: number }> = [];
@@ -461,13 +498,16 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
       details: error.message,
     });
   } finally {
-    if (fs.existsSync(tempFilePath)) {
-      fs.unlink(tempFilePath, (err) => {
-        if (err) {
-          debugLog(`[Transcribe] Error deleting temp file: ${err.message}`);
-        }
-      });
-    }
+    const cleanupTargets = Array.from(new Set([uploadedTempPath, transcribeTempPath]));
+    cleanupTargets.forEach((targetPath) => {
+      if (fs.existsSync(targetPath)) {
+        fs.unlink(targetPath, (err) => {
+          if (err) {
+            debugLog(`[Transcribe] Error deleting temp file (${targetPath}): ${err.message}`);
+          }
+        });
+      }
+    });
   }
 });
 app.post('/api/potential-utterances', (req: Request, res: Response) => {
