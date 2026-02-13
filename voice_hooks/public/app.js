@@ -264,7 +264,7 @@ class VoiceHooksClient {
                     ${utterance.status === 'pending' ? `<button class="delete-btn" data-id="${utterance.id}" title="Delete">×</button>` : ''}
                 </div>
             </div>
-        }).join('');
+        `).join('');
 
         // Add event listeners for delete buttons
         document.querySelectorAll('.delete-btn').forEach(btn => {
