@@ -208,6 +208,22 @@ function handleJsonMessage(rawJson) {
     return;
   }
 
+  if (type === "tool_call") {
+    const name = String(message.name || "unknown_tool");
+    const payload = JSON.stringify(message.payload ?? {});
+    const compact = payload.length > 360 ? `${payload.slice(0, 360)}...` : payload;
+    appendLog(`TOOL CALL: ${name} ${compact}`);
+    return;
+  }
+
+  if (type === "tool_result") {
+    const name = String(message.name || "unknown_tool");
+    const payload = JSON.stringify(message.payload ?? {});
+    const compact = payload.length > 360 ? `${payload.slice(0, 360)}...` : payload;
+    appendLog(`TOOL RESULT: ${name} ${compact}`);
+    return;
+  }
+
   if (type === "interrupted") {
     appendLog("Assistant audio interrupted");
     clearPlaybackQueue();

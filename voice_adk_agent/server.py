@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -28,6 +29,8 @@ logging.basicConfig(level=os.getenv("VOICE_AGENT_LOG_LEVEL", "INFO"))
 
 APP_NAME = os.getenv("VOICE_AGENT_APP_NAME", "drone_voice_agent_app")
 WEB_DIR = Path(__file__).resolve().parent / "web"
+TRACE_TOOLS = os.getenv("VOICE_AGENT_TRACE_TOOLS", "true").lower() not in {"0", "false", "no"}
+TOOL_LOG_MAX_CHARS = int(os.getenv("VOICE_AGENT_TOOL_LOG_MAX_CHARS", "900"))
 
 session_service = InMemorySessionService()
 runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
@@ -48,7 +51,15 @@ async def healthz() -> JSONResponse:
 
 def _build_run_config() -> RunConfig:
     response_modality = os.getenv("VOICE_AGENT_RESPONSE_MODALITY", "AUDIO").upper()
-    response_modalities = ["AUDIO"] if response_modality == "AUDIO" else ["TEXT"]
+    modality_enum = getattr(types, "Modality", None)
+    if modality_enum:
+        audio_modality = getattr(modality_enum, "AUDIO", "AUDIO")
+        text_modality = getattr(modality_enum, "TEXT", "TEXT")
+    else:
+        audio_modality = "AUDIO"
+        text_modality = "TEXT"
+
+    response_modalities = [audio_modality] if response_modality == "AUDIO" else [text_modality]
 
     kwargs: dict[str, Any] = {
         "streaming_mode": StreamingMode.BIDI,
@@ -57,7 +68,7 @@ def _build_run_config() -> RunConfig:
         "output_audio_transcription": {},
     }
 
-    if "AUDIO" in response_modalities:
+    if response_modality == "AUDIO":
         kwargs["speech_config"] = types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -67,6 +78,162 @@ def _build_run_config() -> RunConfig:
         )
 
     return RunConfig(**kwargs)
+
+
+def _plain(value: Any, depth: int = 0) -> Any:
+    if depth > 5:
+        return "<max-depth>"
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<{len(value)} bytes>"
+
+    if isinstance(value, Mapping):
+        return {str(k): _plain(v, depth + 1) for k, v in value.items()}
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
+        return [_plain(v, depth + 1) for v in value]
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _plain(model_dump(exclude_none=True), depth + 1)
+        except Exception:
+            pass
+
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return _plain(to_dict(), depth + 1)
+        except Exception:
+            pass
+
+    as_dict = getattr(value, "__dict__", None)
+    if isinstance(as_dict, dict):
+        return _plain(as_dict, depth + 1)
+
+    return str(value)
+
+
+def _member(value: Any, key: str, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, Mapping):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _compact(value: Any) -> str:
+    text = json.dumps(_plain(value), ensure_ascii=False, sort_keys=True)
+    if len(text) <= TOOL_LOG_MAX_CHARS:
+        return text
+    return f"{text[:TOOL_LOG_MAX_CHARS]} ...<truncated>"
+
+
+def _extract_tool_activity_from_part(part: Any) -> list[dict[str, Any]]:
+    activities: list[dict[str, Any]] = []
+
+    function_call = (
+        _member(part, "function_call")
+        or _member(part, "functionCall")
+        or _member(part, "tool_call")
+        or _member(part, "toolCall")
+    )
+    if function_call is not None:
+        name = _member(function_call, "name") or _member(function_call, "id") or "unknown_tool"
+        args = (
+            _member(function_call, "args")
+            or _member(function_call, "arguments")
+            or _member(function_call, "parameters")
+            or {}
+        )
+        activities.append({"kind": "tool_call", "name": str(name), "payload": args})
+
+    function_response = (
+        _member(part, "function_response")
+        or _member(part, "functionResponse")
+        or _member(part, "tool_response")
+        or _member(part, "toolResponse")
+    )
+    if function_response is not None:
+        name = _member(function_response, "name") or _member(function_response, "id") or "unknown_tool"
+        payload = _member(function_response, "response")
+        if payload is None:
+            payload = _member(function_response, "result")
+        if payload is None:
+            payload = function_response
+        activities.append({"kind": "tool_result", "name": str(name), "payload": payload})
+
+    return activities
+
+
+def _scan_tool_activity(obj: Any, collected: list[dict[str, Any]]) -> None:
+    plain = _plain(obj)
+    if isinstance(plain, Mapping):
+        for key, value in plain.items():
+            lk = str(key).lower()
+
+            if lk in {"function_call", "functioncall", "tool_call", "toolcall"}:
+                name = _member(value, "name") or _member(value, "id") or "unknown_tool"
+                args = _member(value, "args") or _member(value, "arguments") or value
+                collected.append({"kind": "tool_call", "name": str(name), "payload": args})
+
+            if lk in {"function_response", "functionresponse", "tool_response", "toolresponse"}:
+                name = _member(value, "name") or _member(value, "id") or "unknown_tool"
+                payload = _member(value, "response")
+                if payload is None:
+                    payload = _member(value, "result")
+                if payload is None:
+                    payload = value
+                collected.append({"kind": "tool_result", "name": str(name), "payload": payload})
+
+            _scan_tool_activity(value, collected)
+
+    elif isinstance(plain, Sequence) and not isinstance(plain, str):
+        for item in plain:
+            _scan_tool_activity(item, collected)
+
+
+async def _emit_tool_activity(
+    websocket: WebSocket, activities: list[dict[str, Any]], seen_signatures: set[str]
+) -> None:
+    for item in activities:
+        signature = f"{item['kind']}::{item['name']}::{_compact(item['payload'])}"
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+
+        if TRACE_TOOLS:
+            payload_plain = _plain(item["payload"])
+            is_error_result = (
+                item["kind"] == "tool_result"
+                and isinstance(payload_plain, Mapping)
+                and "error" in payload_plain
+            )
+            if is_error_result:
+                logger.error(
+                    "[%s] %s payload=%s",
+                    item["kind"].upper(),
+                    item["name"],
+                    _compact(item["payload"]),
+                )
+            else:
+                logger.info(
+                    "[%s] %s payload=%s",
+                    item["kind"].upper(),
+                    item["name"],
+                    _compact(item["payload"]),
+                )
+
+        await websocket.send_json(
+            {
+                "type": item["kind"],
+                "name": item["name"],
+                "payload": _plain(item["payload"]),
+            }
+        )
 
 
 async def _handle_text_message(raw_message: str, live_request_queue: LiveRequestQueue) -> None:
@@ -88,7 +255,9 @@ async def _handle_text_message(raw_message: str, live_request_queue: LiveRequest
             )
 
 
-async def _forward_event(websocket: WebSocket, event: Any) -> None:
+async def _forward_event(websocket: WebSocket, event: Any, seen_tool_signatures: set[str]) -> None:
+    tool_activities: list[dict[str, Any]] = []
+
     input_tx = getattr(event, "input_transcription", None)
     if input_tx and getattr(input_tx, "text", None):
         await websocket.send_json(
@@ -112,6 +281,8 @@ async def _forward_event(websocket: WebSocket, event: Any) -> None:
     content = getattr(event, "content", None)
     if content and getattr(content, "parts", None):
         for part in content.parts:
+            tool_activities.extend(_extract_tool_activity_from_part(part))
+
             text_part = getattr(part, "text", None)
             if text_part:
                 await websocket.send_json(
@@ -139,6 +310,12 @@ async def _forward_event(websocket: WebSocket, event: Any) -> None:
 
                 if mime_type.startswith("audio/pcm") and blob_data:
                     await websocket.send_bytes(blob_data)
+
+    if not tool_activities:
+        _scan_tool_activity(event, tool_activities)
+
+    if tool_activities:
+        await _emit_tool_activity(websocket, tool_activities, seen_tool_signatures)
 
     if bool(getattr(event, "interrupted", False)):
         await websocket.send_json({"type": "interrupted"})
@@ -171,6 +348,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     live_request_queue = LiveRequestQueue()
     run_config = _build_run_config()
+    seen_tool_signatures: set[str] = set()
+
+    logger.info("Live session started: session_id=%s user_id=%s trace_tools=%s", session_id, user_id, TRACE_TOOLS)
 
     async def upstream() -> None:
         try:
@@ -204,7 +384,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             live_request_queue=live_request_queue,
             run_config=run_config,
         ):
-            await _forward_event(websocket, event)
+            await _forward_event(websocket, event, seen_tool_signatures)
 
     upstream_task = asyncio.create_task(upstream())
     downstream_task = asyncio.create_task(downstream())
