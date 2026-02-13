@@ -813,6 +813,10 @@ app.get('/', (_req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
+app.get('/legacy', (_req: Request, res: Response) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'legacy.html'));
+});
+
 // Start HTTP server
 app.listen(HTTP_PORT, async () => {
   if (!IS_MCP_MANAGED) {
