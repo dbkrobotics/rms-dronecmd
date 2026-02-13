@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voice Mode for Claude Code</title>
+    <title>Voice Mode for Gemini</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -413,8 +413,8 @@
 <body>
     <div class="container">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <h1 style="margin: 0;">Voice Mode for Claude Code</h1>
-            <a href="/" style="color: #999; text-decoration: none; font-size: 13px;">Switch to Messenger UI</a>
+            <h1 style="margin: 0;">Voice Mode for Gemini</h1>
+            <a href="/" style="color: #999; text-decoration: none; font-size: 13px;">Switch to Main UI</a>
         </div>
 
 
@@ -452,7 +452,7 @@
                 <div id="triggerWordControls" style="display: none; margin-bottom: 16px;">
                     <div style="display: flex; gap: 12px; align-items: center;">
                         <label style="font-size: 14px; color: #666;">Trigger Word:</label>
-                        <input type="text" id="triggerWordInput" placeholder="e.g., send, claude, go"
+                        <input type="text" id="triggerWordInput" placeholder="e.g., send, gemini, go"
                                style="flex: 1; padding: 8px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px;">
                         <button id="sendNowBtn" style="background: #007AFF; color: white; border: none; padding: 8px 16px;
                                 border-radius: 6px; font-size: 14px; cursor: pointer;">
@@ -476,7 +476,7 @@
         </div>
         <div class="tts-settings">
             <div style="display: flex; justify-content: space-between; align-items: center;">
-                <h4>Allow Claude to speak back to you</h4>
+                <h4>Allow Gemini to speak back to you</h4>
                 <label class="switch">
                     <input type="checkbox" id="voiceResponsesToggle">
                     <span class="slider"></span>
@@ -526,7 +526,7 @@
                     All</button>
             </h3>
             <div class="info-message" id="infoMessage" style="display: none;">
-                <div class="empty-state">You need to send one message in the Claude code CLI to start voice interaction
+                <div class="empty-state">You need to send one message in the Gemini CLI to start voice interaction
                 </div>
             </div>
             <div class="utterances-list" id="utterancesList">

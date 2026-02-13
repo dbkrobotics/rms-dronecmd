@@ -22,11 +22,11 @@
     "version": "node scripts/sync-plugin-version.cjs && git add plugin/.claude-plugin/plugin.json dev-marketplace/dev-plugin/.claude-plugin/plugin.json",
     "release": "npm version patch && git push --follow-tags"
   },
-  "description": "Real-time voice interaction for Claude Code. Speak naturally while Claude works - interrupt, redirect, or provide continuous feedback without stopping.",
+  "description": "Real-time voice interaction for Gemini. Speak naturally while Gemini works - interrupt, redirect, or provide continuous feedback without stopping.",
   "keywords": [
     "mcp",
-    "claude",
-    "claude-code",
+    "gemini",
+    "google-gemini",
     "voice",
     "speech-recognition",
     "model-context-protocol",

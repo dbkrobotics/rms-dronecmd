@@ -1,7 +1,7 @@
 {
   "name": "mcp-voice-hooks-plugin",
   "version": "1.0.40",
-  "description": "Real-time voice interaction for Claude Code. Speak naturally while Claude works - interrupt, redirect, or provide continuous feedback without stopping.",
+  "description": "Real-time voice interaction for Gemini. Speak naturally while Gemini works - interrupt, redirect, or provide continuous feedback without stopping.",
   "author": {
     "name": "John Matthew Tennant",
     "url": "https://github.com/johnmatthewtennant"
@@ -13,7 +13,7 @@
     "voice",
     "speech-recognition",
     "mcp",
-    "claude-code",
+    "gemini",
     "voice-control",
     "dictation",
     "speech-to-text"

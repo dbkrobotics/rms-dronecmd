@@ -1,10 +1,6 @@
-class MessengerClient {
+class GeminiVoiceClient {
     constructor() {
         this.baseUrl = window.location.origin;
-
-        // Conversation elements
-        this.conversationMessages = document.getElementById('conversationMessages');
-        this.conversationContainer = document.getElementById('conversationContainer');
 
         // Text input elements
         this.messageInput = document.getElementById('messageInput');
@@ -50,10 +46,7 @@ class MessengerClient {
         this.initializeTTSEvents();
         this.setupEventListeners();
         this.loadPreferences();
-        this.loadData();
-
-        // Auto-refresh every 2 seconds
-        setInterval(() => this.loadData(), 2000);
+        this.loadPreferences();
     }
 
     debugLog(...args) {
@@ -113,8 +106,6 @@ class MessengerClient {
 
                 if (data.type === 'speak' && data.text) {
                     this.speakText(data.text);
-                } else if (data.type === 'waitStatus') {
-                    this.handleWaitStatus(data.isWaiting);
                 }
             } catch (error) {
                 console.error('Failed to parse TTS event:', error);
@@ -126,15 +117,7 @@ class MessengerClient {
         };
     }
 
-    handleWaitStatus(isWaiting) {
-        const waitingIndicator = document.getElementById('waitingIndicator');
-        if (waitingIndicator) {
-            waitingIndicator.style.display = isWaiting ? 'block' : 'none';
-            if (isWaiting) {
-                this.scrollToBottom();
-            }
-        }
-    }
+
 
     async speakText(text) {
         // Check if we should use system voice
@@ -419,154 +402,15 @@ class MessengerClient {
         // Test TTS button
         if (this.testTTSBtn) {
             this.testTTSBtn.addEventListener('click', () => {
-                this.speakText('This is Voice Mode for Claude Code. How can I help you today?');
+                this.speakText('This is Voice Mode for Gemini. How can I help you today?');
             });
         }
     }
 
-    async loadData() {
-        try {
-            // Load full conversation
-            const conversationResponse = await fetch(`${this.baseUrl}/api/conversation?limit=50`);
-            if (conversationResponse.ok) {
-                const data = await conversationResponse.json();
-                this.updateConversation(data.messages);
-            }
-        } catch (error) {
-            console.error('Failed to load data:', error);
-        }
-    }
+    // Data loading removed (Messenger UI deleted)
 
-    updateConversation(messages) {
-        const container = this.conversationMessages;
-        const emptyState = container.querySelector('.empty-state');
 
-        if (messages.length === 0) {
-            emptyState.style.display = 'flex';
-            container.querySelectorAll('.message-bubble').forEach(el => el.remove());
-            return;
-        }
 
-        emptyState.style.display = 'none';
-
-        // Get existing message IDs to avoid duplicates
-        const existingBubbles = container.querySelectorAll('.message-bubble');
-        const existingIds = new Set();
-        existingBubbles.forEach(bubble => {
-            if (bubble.dataset.messageId) {
-                existingIds.add(bubble.dataset.messageId);
-            }
-        });
-
-        // Get waiting indicator to insert messages before it
-        const waitingIndicator = container.querySelector('.waiting-indicator');
-
-        // Only render new messages and update status for existing ones
-        messages.forEach(message => {
-            if (!existingIds.has(message.id)) {
-                // New message - create bubble and insert before waiting indicator
-                const bubble = this.createMessageBubble(message);
-                if (waitingIndicator) {
-                    container.insertBefore(bubble, waitingIndicator);
-                } else {
-                    container.appendChild(bubble);
-                }
-            } else {
-                // Existing message - update status if it's a user message
-                if (message.role === 'user' && message.status) {
-                    const bubble = container.querySelector(`[data-message-id="${message.id}"]`);
-                    if (bubble) {
-                        const statusEl = bubble.querySelector('.message-status');
-                        if (statusEl) {
-                            // Check if status changed from pending to something else
-                            const wasPending = statusEl.classList.contains('pending');
-                            const isPending = message.status === 'pending';
-
-                            if (wasPending && !isPending) {
-                                // Status changed from pending - remove delete button
-                                const deleteBtn = statusEl.querySelector('.delete-message-btn');
-                                if (deleteBtn) {
-                                    deleteBtn.remove();
-                                }
-                            }
-
-                            // Update status class and text
-                            statusEl.className = `message-status ${message.status}`;
-                            const statusText = statusEl.querySelector('span:last-child');
-                            if (statusText) {
-                                statusText.textContent = message.status.toUpperCase();
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        this.scrollToBottom();
-    }
-
-    createMessageBubble(message) {
-        const bubble = document.createElement('div');
-        bubble.className = `message-bubble ${message.role}`;
-        bubble.dataset.messageId = message.id;
-
-        const messageText = document.createElement('div');
-        messageText.className = 'message-text';
-        messageText.textContent = message.text;
-
-        const messageMeta = document.createElement('div');
-        messageMeta.className = 'message-meta';
-
-        const timestamp = document.createElement('span');
-        timestamp.className = 'message-timestamp';
-        timestamp.textContent = this.formatTimestamp(message.timestamp);
-        messageMeta.appendChild(timestamp);
-
-        // Only show status for user messages
-        if (message.role === 'user' && message.status) {
-            const statusContainer = document.createElement('div');
-            statusContainer.className = `message-status ${message.status}`;
-
-            // Add delete button for pending messages (shows on hover)
-            if (message.status === 'pending') {
-                const deleteBtn = document.createElement('span');
-                deleteBtn.className = 'delete-message-btn';
-                deleteBtn.innerHTML = `
-                    <svg class="delete-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                        <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
-                    </svg>
-                `;
-                deleteBtn.onclick = (e) => {
-                    e.stopPropagation();
-                    this.deleteMessage(message.id);
-                };
-                statusContainer.appendChild(deleteBtn);
-            }
-
-            const statusText = document.createElement('span');
-            statusText.textContent = message.status.toUpperCase();
-            statusContainer.appendChild(statusText);
-
-            messageMeta.appendChild(statusContainer);
-        }
-
-        bubble.appendChild(messageText);
-        bubble.appendChild(messageMeta);
-
-        return bubble;
-    }
-
-    scrollToBottom() {
-        this.conversationContainer.scrollTo({
-            top: this.conversationContainer.scrollHeight,
-            behavior: 'smooth'
-        });
-    }
-
-    formatTimestamp(timestamp) {
-        const date = new Date(timestamp);
-        return date.toLocaleTimeString();
-    }
 
     // Text input handling
     handleTextInputKeydown(e) {
@@ -602,7 +446,8 @@ class MessengerClient {
             });
 
             if (response.ok) {
-                this.loadData();
+                // Message sent
+                this.debugLog('Message sent:', text);
             }
         } catch (error) {
             console.error('Failed to send message:', error);
@@ -728,29 +573,7 @@ class MessengerClient {
         return filtered.join(' ');
     }
 
-    async deleteMessage(messageId) {
-        try {
-            const response = await fetch(`${this.baseUrl}/api/utterances/${messageId}`, {
-                method: 'DELETE'
-            });
 
-            if (response.ok) {
-                // Remove the message bubble from DOM immediately
-                const bubble = this.conversationMessages.querySelector(`[data-message-id="${messageId}"]`);
-                if (bubble) {
-                    bubble.remove();
-                }
-                // Refresh to sync with server
-                this.loadData();
-            } else {
-                const error = await response.json();
-                console.error('Failed to delete message:', error);
-                alert(`Failed to delete: ${error.error || 'Unknown error'}`);
-            }
-        } catch (error) {
-            console.error('Failed to delete message:', error);
-        }
-    }
 
     async updateVoiceInputState(active) {
         try {
@@ -783,5 +606,5 @@ class MessengerClient {
 
 // Initialize when page loads
 document.addEventListener('DOMContentLoaded', () => {
-    new MessengerClient();
+    new GeminiVoiceClient();
 });

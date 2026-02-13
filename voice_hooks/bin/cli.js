@@ -23,11 +23,11 @@ async function main() {
     } else if (command === 'install-hooks') {
       console.log('🔧 Installing MCP Voice Hooks...');
 
-      // Configure Claude Code settings automatically
-      await configureClaudeCodeSettings();
+      // Configure Gemini settings automatically
+      await configureGeminiSettings();
 
       console.log('\n✅ Installation complete!');
-      console.log('📝 To add the server to Claude Code, run: `claude mcp add voice-hooks npx mcp-voice-hooks@latest`');
+      console.log('📝 To add the server to Gemini, run: `gemini mcp add voice-hooks npx mcp-voice-hooks@latest`');
     } else if (command === 'uninstall') {
       console.log('🗑️  Uninstalling MCP Voice Hooks...');
       await uninstall();
@@ -54,19 +54,19 @@ async function main() {
 }
 
 
-// Automatically configure Claude Code settings
-async function configureClaudeCodeSettings() {
-  const claudeDir = path.join(process.cwd(), '.claude');
-  const settingsPath = path.join(claudeDir, 'settings.local.json');
+// Automatically configure Gemini settings
+async function configureGeminiSettings() {
+  const geminiDir = path.join(process.cwd(), '.gemini');
+  const settingsPath = path.join(geminiDir, 'settings.local.json');
   // This was used in versions <= v1.0.21.
-  const oldSettingsPath = path.join(claudeDir, 'settings.json');
+  const oldSettingsPath = path.join(geminiDir, 'settings.json');
 
-  console.log('⚙️  Configuring project Claude Code settings...');
+  console.log('⚙️  Configuring project Gemini settings...');
 
-  // Create .claude directory if it doesn't exist
-  if (!fs.existsSync(claudeDir)) {
-    fs.mkdirSync(claudeDir, { recursive: true });
-    console.log('✅ Created project .claude directory');
+  // Create .gemini directory if it doesn't exist
+  if (!fs.existsSync(geminiDir)) {
+    fs.mkdirSync(geminiDir, { recursive: true });
+    console.log('✅ Created project .gemini directory');
   }
 
   // Clean up old settings.json if it exists (for users upgrading from older versions)
@@ -118,7 +118,7 @@ async function configureClaudeCodeSettings() {
 
   // Check if hooks actually changed (ignoring order)
   if (areHooksEqual(settings.hooks || {}, updatedHooks)) {
-    console.log('✅ Claude settings already up to date');
+    console.log('✅ Gemini settings already up to date');
     return;
   }
 
@@ -127,7 +127,7 @@ async function configureClaudeCodeSettings() {
 
   // Write settings back
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-  console.log('✅ Updated project Claude Code settings');
+  console.log('✅ Updated project Gemini settings');
 }
 
 // Silent hook installation check - runs on every startup
@@ -136,7 +136,7 @@ async function ensureHooksInstalled() {
     console.log('🔄 Updating hooks to latest version...');
 
     // Update hooks configuration in settings.json
-    await configureClaudeCodeSettings();
+    await configureGeminiSettings();
     console.log('✅ Hooks and settings updated');
   } catch (error) {
     // Silently continue if hooks can't be updated
@@ -190,9 +190,9 @@ async function runMCPServer() {
 
 // Uninstall MCP Voice Hooks
 async function uninstall() {
-  const claudeDir = path.join(process.cwd(), '.claude');
-  const settingsLocalPath = path.join(claudeDir, 'settings.local.json');
-  const settingsPath = path.join(claudeDir, 'settings.json');
+  const geminiDir = path.join(process.cwd(), '.gemini');
+  const settingsLocalPath = path.join(geminiDir, 'settings.local.json');
+  const settingsPath = path.join(geminiDir, 'settings.json');
 
   // Helper function to remove hooks from a settings file
   async function removeHooksFromFile(filePath, fileName) {
@@ -231,7 +231,7 @@ async function uninstall() {
   await removeHooksFromFile(settingsPath, 'settings.json');
 
   if (!fs.existsSync(settingsLocalPath) && !fs.existsSync(settingsPath)) {
-    console.log('ℹ️  No Claude settings files found in current project');
+    console.log('ℹ️  No Gemini settings files found in current project');
   }
 
   console.log('\n✅ Uninstallation complete!');

@@ -184,7 +184,7 @@ class VoiceHooksClient {
         });
 
         this.testTTSBtn.addEventListener('click', () => {
-            this.speakText('This is Voice Mode for Claude Code. How can I help you today?');
+            this.speakText('This is Voice Mode for Gemini. How can I help you today?');
         });
 
         // Voice toggle listeners

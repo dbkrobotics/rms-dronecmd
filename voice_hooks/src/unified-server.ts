@@ -581,7 +581,7 @@ function handleHookRequest(attemptedAction: 'tool' | 'speak' | 'stop' | 'post-to
   return { decision: 'approve' };
 }
 
-// Dedicated hook endpoints that return in Claude's expected format
+// Dedicated hook endpoints that return in Gemini's expected format
 app.post('/api/hooks/stop', async (_req: Request, res: Response) => {
   const result = await handleHookRequest('stop');
   res.json(result);
