@@ -53,7 +53,7 @@ ACTION_PATTERNS = [
     r"\bsquare\b",
 ]
 
-EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more", "다시", "한번 더", "한 번 더"]
+EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more"]
 CONFIRM_PHRASES = {
     "confirm",
     "confirm it",
@@ -109,7 +109,7 @@ def _collapse_duplicate_bigrams(tokens: list[str]) -> list[str]:
 def _normalize_text(raw_text: str) -> str:
     lowered = raw_text.lower().strip()
     lowered = re.sub(r"```[\s\S]*?```", " ", lowered)
-    lowered = re.sub(r"[^0-9a-zA-Z가-힣/_\-\.\s]", " ", lowered)
+    lowered = re.sub(r"[^0-9a-zA-Z/_\-\.\s]", " ", lowered)
     lowered = re.sub(r"\s+", " ", lowered).strip()
 
     if not lowered:
@@ -123,7 +123,7 @@ def _normalize_text(raw_text: str) -> str:
 
 def _normalize_phrase_for_match(text: str) -> str:
     cleaned = text.lower().strip()
-    cleaned = re.sub(r"[^0-9a-zA-Z가-힣\s]", " ", cleaned)
+    cleaned = re.sub(r"[^0-9a-zA-Z\s]", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
@@ -318,7 +318,7 @@ Safety and UX rules:
 - Never invent ROS tool results.
 - Keep responses concise and spoken-language friendly.
 - Preserve user intent exactly; do not rewrite to a different action.
-- Reply in Korean unless the user clearly uses English.
+- Reply in English exclusively.
 """.strip()
 
 
