@@ -61,8 +61,8 @@ class VoiceHooksClient {
         this.silenceMs = 750;
         this.minBlobBytes = 1800;
         this.vadThreshold = 0.015;
-        this.bargeInThreshold = 0.03;
-        this.bargeInHoldMs = 220;
+        this.bargeInThreshold = 0.055;
+        this.bargeInHoldMs = 380;
 
         // Draft confirmation state
         this.pendingDraft = '';
@@ -74,6 +74,7 @@ class VoiceHooksClient {
         this.speechPitch = 1.0;
         this.ttsQueue = [];
         this.isSpeaking = false;
+        this.recentSpokenTexts = [];
 
         this.hideLegacySendModeControls();
         this.initializeSpeechSynthesis();
@@ -572,6 +573,12 @@ class VoiceHooksClient {
                 return;
             }
 
+            if (this.isLikelyEcho(text)) {
+                this.debugLog('Dropped probable echo transcription:', text);
+                this.setInterimText('Ignored probable speaker echo.');
+                return;
+            }
+
             const now = Date.now();
             if (this.lastTranscription.text === text && now - this.lastTranscription.timestamp < 2000) {
                 this.debugLog('Skipping duplicate transcription:', text);
@@ -694,6 +701,64 @@ class VoiceHooksClient {
         return text
             .replace(/\s+/g, ' ')
             .trim();
+    }
+
+    rememberSpokenText(text) {
+        const normalized = this.normalizeTranscript(text).toLowerCase();
+        if (!normalized) {
+            return;
+        }
+
+        this.recentSpokenTexts.push({
+            text: normalized,
+            timestamp: Date.now(),
+        });
+
+        const cutoff = Date.now() - 15000;
+        this.recentSpokenTexts = this.recentSpokenTexts.filter((entry) => entry.timestamp >= cutoff);
+    }
+
+    isLikelyEcho(text) {
+        const normalizedInput = this.normalizeTranscript(text).toLowerCase();
+        if (!normalizedInput || this.recentSpokenTexts.length === 0) {
+            return false;
+        }
+
+        if (this.isConfirmPhrase(normalizedInput) || this.isCancelPhrase(normalizedInput)) {
+            return false;
+        }
+
+        const now = Date.now();
+        const recent = this.recentSpokenTexts.filter((entry) => now - entry.timestamp <= 8000);
+        if (recent.length === 0) {
+            return false;
+        }
+
+        const inputTokens = new Set(normalizedInput.split(' ').filter(Boolean));
+        if (inputTokens.size === 0) {
+            return false;
+        }
+
+        if (inputTokens.size <= 2) {
+            return false;
+        }
+
+        return recent.some((entry) => {
+            if (entry.text.includes(normalizedInput) || normalizedInput.includes(entry.text)) {
+                return true;
+            }
+
+            const spokenTokens = new Set(entry.text.split(' ').filter(Boolean));
+            let overlap = 0;
+            inputTokens.forEach((token) => {
+                if (spokenTokens.has(token)) {
+                    overlap += 1;
+                }
+            });
+
+            const overlapRatio = overlap / inputTokens.size;
+            return overlapRatio >= 0.7;
+        });
     }
 
     extractCoreCommand(text) {
@@ -939,8 +1004,9 @@ class VoiceHooksClient {
             try {
                 const data = JSON.parse(event.data);
                 if (data.type === 'speak' && data.text) {
+                    this.debugLog(`[TTS Event] id=${data.eventId ?? 'n/a'} source=${data.source ?? 'unknown'} len=${String(data.text).length}`);
                     this.enqueueSpeech(data.text, {
-                        interrupt: true,
+                        interrupt: false,
                         force: false,
                     });
                 } else if (data.type === 'waitStatus') {
@@ -1237,7 +1303,7 @@ class VoiceHooksClient {
         if (
             normalizedText &&
             this.lastQueuedSpeech.normalizedText === normalizedText &&
-            nowMs - this.lastQueuedSpeech.timestamp < 1500
+            nowMs - this.lastQueuedSpeech.timestamp < 10000
         ) {
             this.debugLog('Skipped duplicate queued speech:', sanitized);
             return;
@@ -1248,7 +1314,9 @@ class VoiceHooksClient {
             timestamp: nowMs,
         };
 
-        const chunks = this.splitSpeechChunks(sanitized, 220);
+        this.rememberSpokenText(sanitized);
+
+        const chunks = this.splitSpeechChunks(sanitized, 380);
         if (chunks.length === 0) {
             return;
         }
@@ -1289,6 +1357,7 @@ class VoiceHooksClient {
         while (this.ttsQueue.length > 0) {
             const chunk = this.ttsQueue.shift();
             this.isSpeaking = true;
+            this.debugLog(`[TTS Play] voice=${this.selectedVoice} chunkLen=${chunk.length} preview="${chunk.slice(0, 120)}"`);
 
             try {
                 if (this.selectedVoice === 'system') {
@@ -1330,6 +1399,7 @@ class VoiceHooksClient {
             }
 
             const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = 'en-US';
             utterance.rate = this.speechRate;
             utterance.pitch = this.speechPitch;
 

@@ -156,6 +156,7 @@ function handleEvent(event, payload) {
 
         if (textToSpeak) {
             callGetApi('/api/speak-status', (statusResp) => {
+                log(`speak-status: ${JSON.stringify(statusResp)}`);
                 if (statusResp && statusResp.hasRecentSpeak) {
                     log('Recent speak already happened. Skipping AfterAgent TTS to avoid duplicate voice output.');
                     console.log('{}');
@@ -163,7 +164,7 @@ function handleEvent(event, payload) {
                 }
 
                 log(`Sending text to TTS (length: ${textToSpeak.length})...`);
-                callApi('/api/speak', { text: textToSpeak }, () => {
+                callApi('/api/speak', { text: textToSpeak, source: 'after-agent' }, () => {
                     log('TTS request sent.');
                     console.log('{}');
                 });

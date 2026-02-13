@@ -39,6 +39,13 @@ const TRANSCRIBE_MODEL = process.env.MCP_VOICE_HOOKS_TRANSCRIBE_MODEL || 'whispe
 const TRANSCRIBE_LANGUAGE = 'en';
 const MIN_TRANSCRIBE_TEXT_LENGTH = 4;
 const MAX_TRANSCRIBE_RETRIES = 2;
+const SPEAK_DEDUP_WINDOW_MS = (() => {
+  if (!process.env.MCP_VOICE_HOOKS_SPEAK_DEDUP_MS) {
+    return 10000;
+  }
+  const parsed = parseInt(process.env.MCP_VOICE_HOOKS_SPEAK_DEDUP_MS, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10000;
+})();
 
 // Promisified exec for async/await
 const execAsync = promisify(exec);
@@ -448,6 +455,20 @@ const queue = new UtteranceQueue();
 let lastToolUseTimestamp: Date | null = null;
 let lastSpeakTimestamp: Date | null = null;
 let lastSpeakPayload: { normalizedText: string; timestampMs: number } | null = null;
+let ttsSequence = 0;
+
+interface TTSDebugEvent {
+  id: number;
+  timestamp: string;
+  source: string;
+  textPreview: string;
+  textLength: number;
+  deliveredClients: number;
+  duplicateSkipped?: boolean;
+}
+
+const ttsDebugEvents: TTSDebugEvent[] = [];
+const MAX_TTS_DEBUG_EVENTS = 120;
 
 // Voice preferences (controlled by browser)
 let voicePreferences = {
@@ -1032,12 +1053,32 @@ app.get('/api/tts-events', (_req: Request, res: Response) => {
   });
 });
 
+function addTTSDebugEvent(event: TTSDebugEvent) {
+  ttsDebugEvents.push(event);
+  if (ttsDebugEvents.length > MAX_TTS_DEBUG_EVENTS) {
+    ttsDebugEvents.splice(0, ttsDebugEvents.length - MAX_TTS_DEBUG_EVENTS);
+  }
+}
+
 // Helper function to notify all connected TTS clients
-function notifyTTSClients(text: string) {
-  const message = JSON.stringify({ type: 'speak', text });
+function notifyTTSClients(text: string, source: string = 'unknown') {
+  const eventId = ++ttsSequence;
+  const preview = text.replace(/\s+/g, ' ').trim().slice(0, 160);
+  const message = JSON.stringify({ type: 'speak', text, eventId, source });
   ttsClients.forEach(client => {
     client.write(`data: ${message}\n\n`);
   });
+
+  addTTSDebugEvent({
+    id: eventId,
+    timestamp: new Date().toISOString(),
+    source,
+    textPreview: preview,
+    textLength: text.length,
+    deliveredClients: ttsClients.size,
+  });
+
+  debugLog(`[TTS] event=${eventId} source=${source} clients=${ttsClients.size} text="${preview}"`);
 }
 
 // Helper function to notify all connected clients about wait status
@@ -1112,6 +1153,7 @@ app.post('/api/voice-input', (req: Request, res: Response) => {
 // API for text-to-speech
 app.post('/api/speak', async (req: Request, res: Response) => {
   const { text } = req.body;
+  const source = typeof req.body?.source === 'string' ? req.body.source : 'unknown';
 
   if (!text || !text.trim()) {
     res.status(400).json({ error: 'Text is required' });
@@ -1135,9 +1177,18 @@ app.post('/api/speak', async (req: Request, res: Response) => {
       normalizedText &&
       lastSpeakPayload &&
       lastSpeakPayload.normalizedText === normalizedText &&
-      nowMs - lastSpeakPayload.timestampMs < 4000
+      nowMs - lastSpeakPayload.timestampMs < SPEAK_DEDUP_WINDOW_MS
     ) {
       debugLog('[Speak] Duplicate speak request detected, skipping duplicate output');
+      addTTSDebugEvent({
+        id: ++ttsSequence,
+        timestamp: new Date().toISOString(),
+        source: `${source}:duplicate-skip`,
+        textPreview: normalizedText.slice(0, 160),
+        textLength: normalizedText.length,
+        deliveredClients: ttsClients.size,
+        duplicateSkipped: true,
+      });
       res.json({
         success: true,
         message: 'Duplicate speak skipped',
@@ -1152,8 +1203,8 @@ app.post('/api/speak', async (req: Request, res: Response) => {
     };
 
     // Always notify browser clients - they decide how to speak
-    notifyTTSClients(text);
-    debugLog(`[Speak] Sent text to browser for TTS: "${text}"`);
+    notifyTTSClients(text, source);
+    debugLog(`[Speak] source=${source} Sent text to browser for TTS: "${text}"`);
 
     // Note: The browser will decide whether to use system voice or browser voice
 
@@ -1194,8 +1245,16 @@ app.get('/api/speak-status', (_req: Request, res: Response) => {
   const msSinceLastSpeak = lastSpeakPayload ? nowMs - lastSpeakPayload.timestampMs : null;
   res.json({
     success: true,
-    hasRecentSpeak: msSinceLastSpeak !== null && msSinceLastSpeak < 4000,
+    hasRecentSpeak: msSinceLastSpeak !== null && msSinceLastSpeak < SPEAK_DEDUP_WINDOW_MS,
     msSinceLastSpeak,
+  });
+});
+
+app.get('/api/debug/tts-events', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    dedupWindowMs: SPEAK_DEDUP_WINDOW_MS,
+    events: ttsDebugEvents,
   });
 });
 
@@ -1362,7 +1421,7 @@ if (IS_MCP_MANAGED) {
         const response = await fetch(`http://localhost:${HTTP_PORT}/api/speak`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, source: 'mcp-tool' }),
         });
 
         const data = await response.json() as any;
