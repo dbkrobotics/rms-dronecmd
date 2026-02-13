@@ -852,13 +852,18 @@ class VoiceHooksClient {
         const listeningIndicatorText = this.listeningIndicator.querySelector('span');
 
         if (isWaiting) {
-            // Claude is waiting for voice input
-            listeningIndicatorText.textContent = 'Claude is paused and waiting for voice input';
-            this.debugLog('Claude is waiting for voice input');
+            this.listeningIndicator.classList.add('waiting-mode');
+            // Gemini is waiting for voice input
+            listeningIndicatorText.textContent = 'Gemini is paused and waiting for voice input';
+            this.debugLog('Gemini is waiting for voice input');
+
+            // Set input placeholder
+            this.interimText.textContent = 'Listening for your response...';
         } else {
+            this.listeningIndicator.classList.remove('waiting-mode');
             // Back to normal listening state
             listeningIndicatorText.textContent = 'Listening...';
-            this.debugLog('Claude finished waiting');
+            this.debugLog('Gemini finished waiting');
         }
     }
 
@@ -888,6 +893,11 @@ class VoiceHooksClient {
             this.updateQueuedUtterancesUI();
             this.debugLog('Queued utterance:', trimmedText);
         }
+    }
+
+    deleteQueuedUtterance(index) {
+        this.utteranceQueue.splice(index, 1);
+        this.updateQueuedUtterancesUI();
     }
 
     async sendQueuedUtterances() {
@@ -958,11 +968,21 @@ class VoiceHooksClient {
         } else {
             this.queuedUtterancesList.innerHTML = this.utteranceQueue
                 .map((utterance, index) => `
-                    <div style="padding: 6px 0; border-bottom: 1px solid #ddd; font-size: 13px;">
-                        ${index + 1}. ${this.escapeHtml(utterance)}
+                    <div style="padding: 6px 0; border-bottom: 1px solid #ddd; font-size: 13px; display: flex; justify-content: space-between; align-items: center;">
+                        <span>${index + 1}. ${this.escapeHtml(utterance)}</span>
+                        <button class="delete-queue-btn" data-index="${index}" style="background: none; border: none; color: #DC3545; cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 4px;">&times;</button>
                     </div>
                 `)
                 .join('');
+
+            // Add event listeners for delete buttons
+            const deleteButtons = this.queuedUtterancesList.querySelectorAll('.delete-queue-btn');
+            deleteButtons.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    this.deleteQueuedUtterance(index);
+                });
+            });
         }
     }
 }

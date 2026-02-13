@@ -188,10 +188,22 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
   try {
     debugLog(`[Transcribe] Received audio file: ${req.file.originalname} (${req.file.size} bytes)`);
 
-    const translation = await openai.audio.transcriptions.create({
+    const transcriptionConfig: any = {
       file: fs.createReadStream(tempFilePath),
       model: 'whisper-1',
-    });
+    };
+
+    // Add optional configuration
+    // Default prompt with technical terms
+    const defaultPrompt = "MCP, ROS, Server, Drone, PX4, MAVROS, Landing, Arming, Go, Move, meter, Go to, Move to, Square, Circle, Radius, Pattern, Altitude, Lauch, Point, Hovering";
+    const prompt = defaultPrompt; // Always use the fixed prompt
+
+    transcriptionConfig.prompt = prompt;
+    transcriptionConfig.language = 'en'; // Always force English
+    debugLog(`[Transcribe] Using prompt: "${prompt.substring(0, 50)}..."`);
+    debugLog(`[Transcribe] Using language: en`);
+
+    const translation = await openai.audio.transcriptions.create(transcriptionConfig);
 
     const text = translation.text;
     debugLog(`[Transcribe] Transcription result: "${text}"`);

@@ -261,9 +261,18 @@ class VoiceHooksClient {
                     <div class="utterance-status status-${utterance.status}">
                         ${utterance.status.toUpperCase()}
                     </div>
+                    ${utterance.status === 'pending' ? `<button class="delete-btn" data-id="${utterance.id}" title="Delete">×</button>` : ''}
                 </div>
             </div>
-        `).join('');
+        }).join('');
+
+        // Add event listeners for delete buttons
+        document.querySelectorAll('.delete-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const id = e.target.dataset.id;
+                this.deleteUtterance(id);
+            });
+        });
     }
 
     formatTimestamp(timestamp) {
@@ -379,6 +388,24 @@ class VoiceHooksClient {
         } finally {
             this.clearAllBtn.disabled = false;
             this.clearAllBtn.textContent = 'Clear All';
+        }
+    }
+
+    async deleteUtterance(id) {
+        try {
+            const response = await fetch(`${ this.baseUrl } / api / utterances / ${ id }`, {
+                method: 'DELETE',
+            });
+
+            if (response.ok) {
+                this.loadData(); // Refresh the list
+                this.debugLog('Deleted utterance:', id);
+            } else {
+                const error = await response.json();
+                console.error('Error deleting utterance:', error);
+            }
+        } catch (error) {
+            console.error('Failed to delete utterance:', error);
         }
     }
 
@@ -852,13 +879,18 @@ class VoiceHooksClient {
         const listeningIndicatorText = this.listeningIndicator.querySelector('span');
 
         if (isWaiting) {
-            // Claude is waiting for voice input
-            listeningIndicatorText.textContent = 'Claude is paused and waiting for voice input';
-            this.debugLog('Claude is waiting for voice input');
+            this.listeningIndicator.classList.add('waiting-mode');
+            // Gemini is waiting for voice input
+            listeningIndicatorText.textContent = 'Gemini is paused and waiting for voice input';
+            this.debugLog('Gemini is waiting for voice input');
+
+            // Set input placeholder
+            this.interimText.textContent = 'Listening for your response...';
         } else {
+            this.listeningIndicator.classList.remove('waiting-mode');
             // Back to normal listening state
             listeningIndicatorText.textContent = 'Listening...';
-            this.debugLog('Claude finished waiting');
+            this.debugLog('Gemini finished waiting');
         }
     }
 
@@ -888,6 +920,11 @@ class VoiceHooksClient {
             this.updateQueuedUtterancesUI();
             this.debugLog('Queued utterance:', trimmedText);
         }
+    }
+
+    deleteQueuedUtterance(index) {
+        this.utteranceQueue.splice(index, 1);
+        this.updateQueuedUtterancesUI();
     }
 
     async sendQueuedUtterances() {
@@ -958,11 +995,21 @@ class VoiceHooksClient {
         } else {
             this.queuedUtterancesList.innerHTML = this.utteranceQueue
                 .map((utterance, index) => `
-                    <div style="padding: 6px 0; border-bottom: 1px solid #ddd; font-size: 13px;">
-                        ${index + 1}. ${this.escapeHtml(utterance)}
+        < div style = "padding: 6px 0; border-bottom: 1px solid #ddd; font-size: 13px; display: flex; justify-content: space-between; align-items: center;" >
+                        <span>${index + 1}. ${this.escapeHtml(utterance)}</span>
+                        <button class="delete-queue-btn" data-index="${index}" style="background: none; border: none; color: #DC3545; cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 4px;">&times;</button>
                     </div>
                 `)
                 .join('');
+
+            // Add event listeners for delete buttons
+            const deleteButtons = this.queuedUtterancesList.querySelectorAll('.delete-queue-btn');
+            deleteButtons.forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    this.deleteQueuedUtterance(index);
+                });
+            });
         }
     }
 }

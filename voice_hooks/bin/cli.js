@@ -122,7 +122,7 @@ async function configureGeminiSettings() {
     return;
   }
 
-  // Update settings with new hooks
+  // Upate settings with new hooks
   settings.hooks = updatedHooks;
 
   // Write settings back
