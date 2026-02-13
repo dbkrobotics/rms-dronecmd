@@ -6,7 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
-import { exec, execFile } from 'child_process';
+import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { debugLog } from './debug.js';
@@ -217,6 +217,7 @@ interface SystemTTSEngine {
 }
 
 let systemTTSEnginePromise: Promise<SystemTTSEngine | null> | null = null;
+let activeSystemTTSProcess: ReturnType<typeof spawn> | null = null;
 
 async function commandExists(command: string): Promise<boolean> {
   const probe = process.platform === 'win32' ? `where ${command}` : `command -v ${command}`;
@@ -275,6 +276,64 @@ async function resolveSystemTTSEngine(): Promise<SystemTTSEngine | null> {
   })();
 
   return systemTTSEnginePromise;
+}
+
+async function stopActiveSystemTTS(): Promise<boolean> {
+  if (!activeSystemTTSProcess) {
+    return false;
+  }
+
+  const processToStop = activeSystemTTSProcess;
+  activeSystemTTSProcess = null;
+
+  try {
+    processToStop.kill('SIGTERM');
+    setTimeout(() => {
+      try {
+        if (!processToStop.killed) {
+          processToStop.kill('SIGKILL');
+        }
+      } catch {
+        // no-op
+      }
+    }, 250);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runSystemTTS(engine: SystemTTSEngine, text: string, rate: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(engine.command, engine.buildArgs(text, rate), {
+      stdio: 'ignore',
+    });
+    activeSystemTTSProcess = child;
+
+    child.on('error', (error) => {
+      if (activeSystemTTSProcess === child) {
+        activeSystemTTSProcess = null;
+      }
+      reject(error);
+    });
+
+    child.on('close', (code, signal) => {
+      if (activeSystemTTSProcess === child) {
+        activeSystemTTSProcess = null;
+      }
+
+      if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+        resolve();
+        return;
+      }
+
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`System TTS exited with code ${code}`));
+      }
+    });
+  });
 }
 
 // Shared utterance queue
@@ -388,6 +447,7 @@ const IS_MCP_MANAGED = process.argv.includes('--mcp-managed');
 const queue = new UtteranceQueue();
 let lastToolUseTimestamp: Date | null = null;
 let lastSpeakTimestamp: Date | null = null;
+let lastSpeakPayload: { normalizedText: string; timestampMs: number } | null = null;
 
 // Voice preferences (controlled by browser)
 let voicePreferences = {
@@ -1069,6 +1129,28 @@ app.post('/api/speak', async (req: Request, res: Response) => {
   }
 
   try {
+    const normalizedText = String(text).replace(/\s+/g, ' ').trim().toLowerCase();
+    const nowMs = Date.now();
+    if (
+      normalizedText &&
+      lastSpeakPayload &&
+      lastSpeakPayload.normalizedText === normalizedText &&
+      nowMs - lastSpeakPayload.timestampMs < 4000
+    ) {
+      debugLog('[Speak] Duplicate speak request detected, skipping duplicate output');
+      res.json({
+        success: true,
+        message: 'Duplicate speak skipped',
+        duplicateSkipped: true,
+      });
+      return;
+    }
+
+    lastSpeakPayload = {
+      normalizedText,
+      timestampMs: nowMs,
+    };
+
     // Always notify browser clients - they decide how to speak
     notifyTTSClients(text);
     debugLog(`[Speak] Sent text to browser for TTS: "${text}"`);
@@ -1107,6 +1189,16 @@ app.post('/api/speak', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/api/speak-status', (_req: Request, res: Response) => {
+  const nowMs = Date.now();
+  const msSinceLastSpeak = lastSpeakPayload ? nowMs - lastSpeakPayload.timestampMs : null;
+  res.json({
+    success: true,
+    hasRecentSpeak: msSinceLastSpeak !== null && msSinceLastSpeak < 4000,
+    msSinceLastSpeak,
+  });
+});
+
 // API for system text-to-speech (cross-platform fallback)
 app.post('/api/speak-system', async (req: Request, res: Response) => {
   const { text, rate: requestedRate = 150 } = req.body;
@@ -1130,7 +1222,8 @@ app.post('/api/speak-system', async (req: Request, res: Response) => {
     }
 
     const normalizedText = String(text).replace(/\s+/g, ' ').trim();
-    await execFileAsync(engine.command, engine.buildArgs(normalizedText, rate));
+    await stopActiveSystemTTS();
+    await runSystemTTS(engine, normalizedText, rate);
     debugLog(`[Speak System] Spoke text via ${engine.name}: "${normalizedText}" (rate: ${rate})`);
 
     res.json({
@@ -1144,6 +1237,14 @@ app.post('/api/speak-system', async (req: Request, res: Response) => {
       details: error instanceof Error ? error.message : String(error)
     });
   }
+});
+
+app.post('/api/speak-system/stop', async (_req: Request, res: Response) => {
+  const stopped = await stopActiveSystemTTS();
+  res.json({
+    success: true,
+    stopped,
+  });
 });
 
 // UI Routing

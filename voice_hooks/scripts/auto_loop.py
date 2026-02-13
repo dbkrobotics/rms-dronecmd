@@ -56,8 +56,11 @@ def voice_listener_loop(child):
 
 def main():
     print("Starting Gemini Voice Loop... (Interactive Mode)")
-    
-    child = pexpect.spawn(GEMINI_CMD, encoding='utf-8')
+
+    env = os.environ.copy()
+    env["MCP_VOICE_HOOKS_INPUT_MODE"] = "auto-loop"
+
+    child = pexpect.spawn(GEMINI_CMD, encoding='utf-8', env=env)
     
     try:
         rows, cols = os.popen('stty size', 'r').read().split()

@@ -104,6 +104,11 @@ function handleEvent(event, payload) {
         log('Entering BeforeAgent logic...');
         log(`Payload: ${JSON.stringify(payload)}`);
 
+        if (process.env.MCP_VOICE_HOOKS_INPUT_MODE === 'auto-loop') {
+            log('auto-loop input mode detected. Skipping BeforeAgent dequeue.');
+            console.log('{}');
+            return;
+        }
 
         if (payload.prompt && payload.prompt.trim().length > 0) {
             console.log('{}');
@@ -137,6 +142,12 @@ function handleEvent(event, payload) {
     } else if (event === 'AfterAgent') {
         log('Entering AfterAgent logic...');
 
+        if (process.env.MCP_VOICE_HOOKS_AFTER_AGENT_SPEAK === 'false') {
+            log('AfterAgent speak disabled by MCP_VOICE_HOOKS_AFTER_AGENT_SPEAK=false');
+            console.log('{}');
+            return;
+        }
+
         let textToSpeak = "";
 
         if (payload.prompt_response) {
@@ -144,10 +155,18 @@ function handleEvent(event, payload) {
         }
 
         if (textToSpeak) {
-            log(`Sending text to TTS (length: ${textToSpeak.length})...`);
-            callApi('/api/speak', { text: textToSpeak }, () => {
-                log('TTS request sent.');
-                console.log('{}');
+            callGetApi('/api/speak-status', (statusResp) => {
+                if (statusResp && statusResp.hasRecentSpeak) {
+                    log('Recent speak already happened. Skipping AfterAgent TTS to avoid duplicate voice output.');
+                    console.log('{}');
+                    return;
+                }
+
+                log(`Sending text to TTS (length: ${textToSpeak.length})...`);
+                callApi('/api/speak', { text: textToSpeak }, () => {
+                    log('TTS request sent.');
+                    console.log('{}');
+                });
             });
         } else {
             log('No text found to speak in AfterAgent payload.');
@@ -158,6 +177,42 @@ function handleEvent(event, payload) {
         log(`Ignoring unknown event: ${event}`);
         console.log('{}');
     }
+}
+
+function callGetApi(path, callback) {
+    const options = {
+        hostname: SERVER_HOST,
+        port: SERVER_PORT,
+        path: path,
+        method: 'GET',
+        timeout: 3000
+    };
+
+    const req = http.request(options, (res) => {
+        let responseData = '';
+        res.on('data', chunk => responseData += chunk);
+        res.on('end', () => {
+            try {
+                callback(JSON.parse(responseData));
+            } catch (e) {
+                log(`Error parsing GET API response: ${e.message}`);
+                callback(null);
+            }
+        });
+    });
+
+    req.on('error', (e) => {
+        log(`GET API Request failed: ${e.message}`);
+        callback(null);
+    });
+
+    req.on('timeout', () => {
+        log('GET API Request timed out.');
+        req.destroy();
+        callback(null);
+    });
+
+    req.end();
 }
 
 function sanitizeForSpeech(text) {

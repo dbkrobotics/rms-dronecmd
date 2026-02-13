@@ -52,8 +52,8 @@ class VoiceHooksClient {
         this.segmentHasSpeech = false;
         this.isTranscribing = false;
         this.lastTranscription = { text: '', timestamp: 0 };
-        this.capturePausedForSpeech = false;
-        this.discardNextSegment = false;
+        this.bargeInSpeechSince = 0;
+        this.lastQueuedSpeech = { normalizedText: '', timestamp: 0 };
 
         // Tunables for VAD/segmentation
         this.maxSegmentMs = 8000;
@@ -61,6 +61,8 @@ class VoiceHooksClient {
         this.silenceMs = 750;
         this.minBlobBytes = 1800;
         this.vadThreshold = 0.015;
+        this.bargeInThreshold = 0.03;
+        this.bargeInHoldMs = 220;
 
         // Draft confirmation state
         this.pendingDraft = '';
@@ -340,8 +342,7 @@ class VoiceHooksClient {
         }
 
         this.isListening = false;
-        this.capturePausedForSpeech = false;
-        this.discardNextSegment = false;
+        this.bargeInSpeechSince = 0;
         this.clearSegmentTimers();
 
         if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
@@ -447,7 +448,7 @@ class VoiceHooksClient {
 
             await this.handleRecordedSegment(blob);
 
-            if (this.isListening && !this.capturePausedForSpeech) {
+            if (this.isListening) {
                 this.startRecordingSegment();
             }
         };
@@ -486,6 +487,21 @@ class VoiceHooksClient {
             this.lastSpeechAt = now;
         }
 
+        if (this.isSpeaking && this.isListening) {
+            if (rms > this.bargeInThreshold) {
+                if (!this.bargeInSpeechSince) {
+                    this.bargeInSpeechSince = now;
+                } else if (now - this.bargeInSpeechSince >= this.bargeInHoldMs) {
+                    this.interruptSpeechForUserInput();
+                    this.bargeInSpeechSince = 0;
+                }
+            } else {
+                this.bargeInSpeechSince = 0;
+            }
+        } else {
+            this.bargeInSpeechSince = 0;
+        }
+
         const elapsed = now - this.segmentStartedAt;
         const shouldStopForSilence =
             this.segmentHasSpeech &&
@@ -496,6 +512,17 @@ class VoiceHooksClient {
         if (shouldStopForSilence && this.mediaRecorder.state !== 'inactive') {
             this.mediaRecorder.stop();
         }
+    }
+
+    interruptSpeechForUserInput() {
+        if (!this.isSpeaking && this.ttsQueue.length === 0) {
+            return;
+        }
+
+        this.debugLog('Barge-in detected. Interrupting TTS.');
+        this.ttsQueue = [];
+        this.cancelCurrentSpeech();
+        this.setInterimText('Listening...');
     }
 
     clearSegmentTimers() {
@@ -527,11 +554,6 @@ class VoiceHooksClient {
     }
 
     async handleRecordedSegment(blob) {
-        if (this.discardNextSegment) {
-            this.discardNextSegment = false;
-            return;
-        }
-
         if (!blob || blob.size < this.minBlobBytes || !this.segmentHasSpeech) {
             return;
         }
@@ -606,7 +628,7 @@ class VoiceHooksClient {
     }
 
     async handleRecognizedText(text) {
-        const normalized = this.normalizeTranscript(text);
+        const normalized = this.extractCoreCommand(text);
         if (!normalized) {
             return;
         }
@@ -615,10 +637,10 @@ class VoiceHooksClient {
             this.pendingDraft = normalized;
             this.updatePendingDraftUI(
                 this.pendingDraft,
-                'Say "confirm and execute" to run, or say "change to ..." to edit.'
+                'Say "confirm" to run it.'
             );
             this.enqueueSpeech(
-                `I heard: ${this.pendingDraft}. Say confirm and execute to run it, or say change to followed by your correction.`,
+                `I heard ${this.pendingDraft}. Say confirm to run it.`,
                 { interrupt: true, force: true }
             );
             return;
@@ -643,9 +665,9 @@ class VoiceHooksClient {
             this.pendingDraft = correction;
             this.updatePendingDraftUI(
                 this.pendingDraft,
-                'Draft updated. Say "confirm and execute" when ready.'
+                'Draft updated. Say "confirm" to run it.'
             );
-            this.enqueueSpeech(`Updated draft: ${this.pendingDraft}. Say confirm and execute when ready.`, {
+            this.enqueueSpeech(`Updated draft: ${this.pendingDraft}. Say confirm to run it.`, {
                 interrupt: true,
                 force: true,
             });
@@ -656,9 +678,9 @@ class VoiceHooksClient {
         this.pendingDraft = normalized;
         this.updatePendingDraftUI(
             this.pendingDraft,
-            'Draft replaced. Say "confirm and execute" to run.'
+            'Draft replaced. Say "confirm" to run it.'
         );
-        this.enqueueSpeech(`I will use: ${this.pendingDraft}. Say confirm and execute when ready.`, {
+        this.enqueueSpeech(`I heard ${this.pendingDraft}. Say confirm to run it.`, {
             interrupt: true,
             force: true,
         });
@@ -674,22 +696,62 @@ class VoiceHooksClient {
             .trim();
     }
 
-    isConfirmPhrase(text) {
-        const normalized = text.toLowerCase();
-        const confirmPatterns = [
-            /\bconfirm( it)?\b/,
-            /\bconfirm and execute\b/,
-            /\bexecute( now)?\b/,
-            /\brun( it| this)?\b/,
-            /\bgo ahead\b/,
-            /\byes\b/,
-            /\bok(?:ay)?\b/,
-            /\bthat'?s (right|correct)\b/,
-            /\bcorrect\b/,
-            /\bdo it\b/,
+    extractCoreCommand(text) {
+        if (!text) {
+            return '';
+        }
+
+        let normalized = this.normalizeTranscript(text);
+
+        // Remove repeated disfluencies such as "no no no", "uh", "um".
+        normalized = normalized
+            .replace(/^(?:no[\s,.-]*){2,}/i, '')
+            .replace(/^(?:uh+|um+|hmm+|like|well|so|actually|please)\b[\s,.-]*/gi, '')
+            .replace(/\b(?:uh+|um+|hmm+)\b/gi, '')
+            .replace(/\b(?:please)\b/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        // Prefer the segment after correction cues.
+        const correctionCues = [
+            /\b(?:i mean|correction|instead|no use|change to|update to|replace with)\b[:\s-]*/i,
         ];
 
-        return confirmPatterns.some((pattern) => pattern.test(normalized));
+        correctionCues.forEach((pattern) => {
+            const match = normalized.match(pattern);
+            if (match && typeof match.index === 'number') {
+                const start = match.index + match[0].length;
+                const tail = normalized.slice(start).trim();
+                if (tail.length > 1) {
+                    normalized = tail;
+                }
+            }
+        });
+
+        return normalized;
+    }
+
+    isConfirmPhrase(text) {
+        const normalized = text
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        const exactConfirmPhrases = [
+            'confirm',
+            'confirm it',
+            'execute',
+            'execute it',
+            'run',
+            'run it',
+            'do it',
+            'go ahead',
+            'thats correct',
+            'that is correct',
+        ];
+
+        return exactConfirmPhrases.includes(normalized);
     }
 
     isCancelPhrase(text) {
@@ -706,6 +768,7 @@ class VoiceHooksClient {
             /^correction[:\s]+(.+)$/i,
             /^actually\s+(.+)$/i,
             /^no[,\s]+use\s+(.+)$/i,
+            /^(?:no[\s,.-]+){1,}(.+)$/i,
         ];
 
         for (const pattern of patterns) {
@@ -1168,6 +1231,23 @@ class VoiceHooksClient {
         }
 
         const sanitized = this.sanitizeSpeechText(text);
+        const normalizedText = sanitized.toLowerCase();
+        const nowMs = Date.now();
+
+        if (
+            normalizedText &&
+            this.lastQueuedSpeech.normalizedText === normalizedText &&
+            nowMs - this.lastQueuedSpeech.timestamp < 1500
+        ) {
+            this.debugLog('Skipped duplicate queued speech:', sanitized);
+            return;
+        }
+
+        this.lastQueuedSpeech = {
+            normalizedText,
+            timestamp: nowMs,
+        };
+
         const chunks = this.splitSpeechChunks(sanitized, 220);
         if (chunks.length === 0) {
             return;
@@ -1176,14 +1256,6 @@ class VoiceHooksClient {
         if (interrupt) {
             this.ttsQueue = [];
             this.cancelCurrentSpeech();
-        }
-
-        if (this.isListening && !this.capturePausedForSpeech) {
-            this.capturePausedForSpeech = true;
-            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                this.discardNextSegment = true;
-                this.mediaRecorder.stop();
-            }
         }
 
         this.ttsQueue.push(...chunks);
@@ -1197,6 +1269,15 @@ class VoiceHooksClient {
         if (window.speechSynthesis) {
             window.speechSynthesis.cancel();
         }
+
+        if (this.selectedVoice === 'system') {
+            fetch(`${this.baseUrl}/api/speak-system/stop`, {
+                method: 'POST',
+            }).catch((error) => {
+                this.debugLog('Failed to stop system TTS', error);
+            });
+        }
+
         this.isSpeaking = false;
     }
 
@@ -1220,13 +1301,6 @@ class VoiceHooksClient {
             }
 
             this.isSpeaking = false;
-        }
-
-        if (this.capturePausedForSpeech && this.isListening && !this.isTranscribing) {
-            this.capturePausedForSpeech = false;
-            this.startRecordingSegment();
-        } else if (!this.isListening) {
-            this.capturePausedForSpeech = false;
         }
     }
 
