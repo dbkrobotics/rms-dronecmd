@@ -32,14 +32,6 @@ FILLER_WORDS = {
     "assistant",
     "gemini",
     "drone",
-    "어",
-    "음",
-    "그",
-    "저기",
-    "그냥",
-    "좀",
-    "잠깐",
-    "혹시",
 }
 
 ACTION_PATTERNS = [
@@ -64,21 +56,9 @@ ACTION_PATTERNS = [
     r"\\brotate\\b",
     r"\\bcircle\\b",
     r"\\bsquare\\b",
-    r"이륙",
-    r"착륙",
-    r"호버",
-    r"정지",
-    r"상승",
-    r"하강",
-    r"전진",
-    r"후진",
-    r"좌회전",
-    r"우회전",
-    r"복귀",
-    r"귀환",
 ]
 
-EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more", "다시", "한번 더", "한 번 더"]
+EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more"]
 CONFIRM_PHRASES = {
     "confirm",
     "confirm it",
@@ -90,13 +70,6 @@ CONFIRM_PHRASES = {
     "go ahead",
     "thats correct",
     "that is correct",
-    "확인",
-    "실행",
-    "진행",
-    "맞아",
-    "맞습니다",
-    "오케이",
-    "좋아",
 }
 CANCEL_KEYWORDS = {
     "cancel",
@@ -104,10 +77,6 @@ CANCEL_KEYWORDS = {
     "never mind",
     "start over",
     "drop it",
-    "취소",
-    "그만",
-    "중지",
-    "스탑",
 }
 
 
@@ -145,7 +114,7 @@ def _collapse_duplicate_bigrams(tokens: list[str]) -> list[str]:
 def _normalize_text(raw_text: str) -> str:
     lowered = raw_text.lower().strip()
     lowered = re.sub(r"```[\\s\\S]*?```", " ", lowered)
-    lowered = re.sub(r"[^0-9a-zA-Z가-힣/_\\-\\.\\s]", " ", lowered)
+    lowered = re.sub(r"[^0-9a-zA-Z/_\\-\\.\\s]", " ", lowered)
     lowered = re.sub(r"\\s+", " ", lowered).strip()
 
     if not lowered:
@@ -159,7 +128,7 @@ def _normalize_text(raw_text: str) -> str:
 
 def _normalize_phrase_for_match(text: str) -> str:
     cleaned = text.lower().strip()
-    cleaned = re.sub(r"[^0-9a-zA-Z가-힣\\s]", " ", cleaned)
+    cleaned = re.sub(r"[^0-9a-zA-Z\\s]", " ", cleaned)
     cleaned = re.sub(r"\\s+", " ", cleaned).strip()
     return cleaned
 
@@ -404,7 +373,7 @@ Safety and UX rules:
 - Never invent ROS tool results.
 - Keep responses concise and spoken-language friendly.
 - Preserve user intent exactly; do not rewrite to a different action.
-- Reply in Korean unless the user clearly uses English.
+- Reply in English only.
 """.strip()
 
 ROBOT_SPEC_CONTEXT, ROBOT_SPEC_PATH = _load_robot_spec_context()

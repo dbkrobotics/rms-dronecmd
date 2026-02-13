@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -24,7 +24,7 @@
 
       body {
         margin: 0;
-        font-family: "Pretendard", "Noto Sans KR", system-ui, sans-serif;
+        font-family: "Inter", system-ui, sans-serif;
         background: radial-gradient(circle at 20% 0%, #1d2734 0%, var(--bg) 55%);
         color: var(--text);
       }
@@ -172,13 +172,13 @@
       <section class="panel">
         <h1>Drone Voice ADK Agent</h1>
         <p class="subtitle">
-          사람 ↔ 실시간 Voice Agent ↔ ROS MCP Server 직접 연동 (voice_hooks와 독립, confirm 기반 실행)
+          Human ↔ Real-time Voice Agent ↔ Direct ROS MCP Server Control (independent from voice_hooks, confirm-gated)
         </p>
       </section>
 
       <section class="panel row">
         <div>
-          연결 상태: <span id="connectionStatus" class="status warn">DISCONNECTED</span>
+          Connection: <span id="connectionStatus" class="status warn">DISCONNECTED</span>
         </div>
         <button id="connectBtn" class="primary">Connect</button>
         <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
@@ -192,7 +192,7 @@
 
       <section class="panel">
         <div class="row">
-          <input id="textInput" type="text" placeholder="텍스트 명령 입력 (예: takeoff to 2 meters) → 이후 confirm 필요" disabled />
+          <input id="textInput" type="text" placeholder="Type a command (e.g., takeoff to 2 meters) → then say confirm" disabled />
           <button id="sendTextBtn" class="primary" disabled>Send</button>
         </div>
       </section>
