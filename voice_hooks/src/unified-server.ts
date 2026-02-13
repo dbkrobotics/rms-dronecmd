@@ -6,7 +6,7 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { debugLog } from './debug.js';
@@ -34,20 +34,224 @@ const __dirname = path.dirname(__filename);
 // Constants
 const WAIT_TIMEOUT_SECONDS = 60;
 const HTTP_PORT = process.env.MCP_VOICE_HOOKS_PORT ? parseInt(process.env.MCP_VOICE_HOOKS_PORT) : 5111;
+const HTTP_HOST = '0.0.0.0';
+const TRANSCRIBE_MODEL = process.env.MCP_VOICE_HOOKS_TRANSCRIBE_MODEL || 'whisper-1';
+const TRANSCRIBE_LANGUAGE = 'en';
+const MIN_TRANSCRIBE_TEXT_LENGTH = 4;
+const MAX_TRANSCRIBE_RETRIES = 2;
 
 // Promisified exec for async/await
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // Function to play a sound notification
 async function playNotificationSound() {
-  try {
-    // Use macOS system sound
-    await execAsync('afplay /System/Library/Sounds/Funk.aiff');
-    debugLog('[Sound] Played notification sound');
-  } catch (error) {
-    debugLog(`[Sound] Failed to play sound: ${error}`);
-    // Don't throw - sound is not critical
+  const candidates: Array<{ command: string; args: string[] }> = [];
+
+  if (process.platform === 'darwin') {
+    candidates.push({
+      command: 'afplay',
+      args: ['/System/Library/Sounds/Funk.aiff'],
+    });
   }
+
+  if (process.platform === 'linux') {
+    candidates.push(
+      { command: 'paplay', args: ['/usr/share/sounds/freedesktop/stereo/message-new-instant.oga'] },
+      { command: 'aplay', args: ['/usr/share/sounds/alsa/Front_Center.wav'] }
+    );
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (!(await commandExists(candidate.command))) {
+        continue;
+      }
+
+      await execFileAsync(candidate.command, candidate.args);
+      debugLog(`[Sound] Played notification using ${candidate.command}`);
+      return;
+    } catch (error) {
+      debugLog(`[Sound] ${candidate.command} failed: ${error}`);
+    }
+  }
+
+  debugLog('[Sound] No notification sound backend available');
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getNetworkUrls(port: number): string[] {
+  const urls = new Set<string>([`http://localhost:${port}`]);
+  const interfaces = os.networkInterfaces();
+
+  Object.values(interfaces).forEach((entries) => {
+    if (!entries) {
+      return;
+    }
+
+    entries.forEach((entry) => {
+      if (entry.family !== 'IPv4' || entry.internal) {
+        return;
+      }
+
+      urls.add(`http://${entry.address}:${port}`);
+    });
+  });
+
+  return Array.from(urls);
+}
+
+function getPrimaryPhoneUrl(port: number): string {
+  const urls = getNetworkUrls(port);
+  return urls.find((url) => !url.includes('localhost')) || urls[0];
+}
+
+function buildEnglishTranscriptionPrompt(extraHints?: string): string {
+  const defaultHints = [
+    'mcp',
+    'ros',
+    'server',
+    'drone',
+    'px4',
+    'mavros',
+    'take off',
+    'land',
+    'arm',
+    'disarm',
+    'hover',
+    'move forward',
+    'move backward',
+    'move left',
+    'move right',
+    'move up',
+    'move down',
+    'meter',
+    'circle',
+    'square',
+    'altitude',
+  ];
+
+  const parts = [
+    'Transcribe only spoken English commands for drone control.',
+    'Keep punctuation simple.',
+    `Domain terms: ${defaultHints.join(', ')}.`,
+  ];
+
+  if (extraHints && extraHints.trim()) {
+    parts.push(`Additional hints: ${extraHints.trim()}.`);
+  }
+
+  return parts.join(' ');
+}
+
+function isTranscriptionLikelyNoise(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  if (normalized.length < MIN_TRANSCRIBE_TEXT_LENGTH) {
+    return true;
+  }
+
+  const noisePatterns = [
+    'thank you',
+    'thanks for watching',
+    'subtitle',
+    'subtitles by',
+    'you',
+    'okay',
+    'ok',
+  ];
+
+  return noisePatterns.some((pattern) => normalized === pattern);
+}
+
+function scoreTranscription(text: string): number {
+  const normalized = text.trim();
+  if (!normalized) {
+    return -1;
+  }
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+  let score = normalized.length;
+  score += words.length * 3;
+
+  if (isTranscriptionLikelyNoise(normalized)) {
+    score -= 30;
+  }
+
+  return score;
+}
+
+interface SystemTTSEngine {
+  name: string;
+  command: string;
+  buildArgs: (text: string, rate: number) => string[];
+}
+
+let systemTTSEnginePromise: Promise<SystemTTSEngine | null> | null = null;
+
+async function commandExists(command: string): Promise<boolean> {
+  const probe = process.platform === 'win32' ? `where ${command}` : `command -v ${command}`;
+  try {
+    await execAsync(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveSystemTTSEngine(): Promise<SystemTTSEngine | null> {
+  if (systemTTSEnginePromise) {
+    return systemTTSEnginePromise;
+  }
+
+  systemTTSEnginePromise = (async () => {
+    if (process.platform === 'darwin') {
+      return {
+        name: 'say',
+        command: 'say',
+        buildArgs: (text, rate) => ['-r', String(clampNumber(Math.round(rate), 80, 320)), text],
+      };
+    }
+
+    if (process.platform === 'linux') {
+      if (await commandExists('spd-say')) {
+        return {
+          name: 'spd-say',
+          command: 'spd-say',
+          buildArgs: (text, rate) => {
+            const mappedRate = clampNumber(Math.round(((rate - 150) / 110) * 100), -100, 100);
+            return ['-r', String(mappedRate), text];
+          },
+        };
+      }
+
+      if (await commandExists('espeak-ng')) {
+        return {
+          name: 'espeak-ng',
+          command: 'espeak-ng',
+          buildArgs: (text, rate) => ['-s', String(clampNumber(Math.round(rate), 80, 320)), text],
+        };
+      }
+
+      if (await commandExists('espeak')) {
+        return {
+          name: 'espeak',
+          command: 'espeak',
+          buildArgs: (text, rate) => ['-s', String(clampNumber(Math.round(rate), 80, 320)), text],
+        };
+      }
+    }
+
+    return null;
+  })();
+
+  return systemTTSEnginePromise;
 }
 
 // Shared utterance queue
@@ -178,51 +382,90 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // API for audio transcription using OpenAI Whisper
 app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Response): Promise<void> => {
+  if (!process.env.OPENAI_API_KEY) {
+    res.status(500).json({
+      error: 'OPENAI_API_KEY is not configured',
+      details: 'Set OPENAI_API_KEY so audio can be transcribed.',
+    });
+    return;
+  }
+
   if (!req.file) {
     res.status(400).json({ error: 'No audio file uploaded' });
     return;
   }
 
   const tempFilePath = req.file.path;
+  const hints = typeof req.body?.hints === 'string' ? req.body.hints : '';
+  const prompt = buildEnglishTranscriptionPrompt(hints);
+  const candidateModels = Array.from(new Set([TRANSCRIBE_MODEL, 'whisper-1']));
 
   try {
-    debugLog(`[Transcribe] Received audio file: ${req.file.originalname} (${req.file.size} bytes)`);
+    debugLog(
+      `[Transcribe] Received audio file: ${req.file.originalname} (${req.file.size} bytes), models=${candidateModels.join(',')}`
+    );
 
-    const transcriptionConfig: any = {
-      file: fs.createReadStream(tempFilePath),
-      model: 'whisper-1',
-    };
+    const candidates: Array<{ text: string; score: number; model: string; attempt: number }> = [];
+    let lastError: Error | null = null;
 
-    // Add optional configuration
-    // Default prompt with technical terms
-    const defaultPrompt = "MCP, ROS, Server, Drone, PX4, MAVROS, FLY, Landing, Arming, Go, Move, meter, Go to, Move to, Square, Circle, Radius, Pattern, Altitude, Launch, Point, Hovering, Take off, Take off to";
-    const prompt = defaultPrompt; // Always use the fixed prompt
+    for (const model of candidateModels) {
+      for (let attempt = 0; attempt <= MAX_TRANSCRIBE_RETRIES; attempt += 1) {
+        try {
+          const transcription = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(tempFilePath),
+            model,
+            prompt,
+            language: TRANSCRIBE_LANGUAGE,
+            temperature: 0,
+          } as any);
 
-    transcriptionConfig.prompt = prompt;
-    transcriptionConfig.language = 'en'; // Always force English
-    debugLog(`[Transcribe] Using prompt: "${prompt.substring(0, 50)}..."`);
-    debugLog(`[Transcribe] Using language: en`);
+          const text = transcription.text?.trim() || '';
+          const score = scoreTranscription(text);
+          candidates.push({ text, score, model, attempt });
+          debugLog(`[Transcribe] model=${model} attempt=${attempt} => "${text}" (score=${score})`);
 
-    const translation = await openai.audio.transcriptions.create(transcriptionConfig);
+          if (!isTranscriptionLikelyNoise(text)) {
+            res.json({
+              success: true,
+              text,
+              language: TRANSCRIBE_LANGUAGE,
+              model,
+              lowConfidence: false,
+            });
+            return;
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          debugLog(`[Transcribe] model=${model} attempt=${attempt} failed: ${lastError.message}`);
+        }
+      }
+    }
 
-    const text = translation.text;
-    debugLog(`[Transcribe] Transcription result: "${text}"`);
+    const best = candidates.sort((a, b) => b.score - a.score)[0];
+    if (best && best.text) {
+      res.json({
+        success: true,
+        text: best.text,
+        language: TRANSCRIBE_LANGUAGE,
+        model: best.model,
+        lowConfidence: true,
+      });
+      return;
+    }
 
-    res.json({
-      success: true,
-      text: text
-    });
+    throw lastError || new Error('No transcription result produced');
   } catch (error: any) {
     debugLog(`[Transcribe] Error during transcription: ${error.message}`);
     res.status(500).json({
       error: 'Transcription failed',
-      details: error.message
+      details: error.message,
     });
   } finally {
-    // Clean up temp file
     if (fs.existsSync(tempFilePath)) {
       fs.unlink(tempFilePath, (err) => {
-        if (err) debugLog(`[Transcribe] Error deleting temp file: ${err.message}`);
+        if (err) {
+          debugLog(`[Transcribe] Error deleting temp file: ${err.message}`);
+        }
       });
     }
   }
@@ -287,6 +530,17 @@ app.get('/api/utterances/status', (_req: Request, res: Response) => {
     total,
     pending,
     delivered,
+  });
+});
+
+app.get('/api/network-info', (_req: Request, res: Response) => {
+  const urls = getNetworkUrls(HTTP_PORT);
+  res.json({
+    success: true,
+    host: HTTP_HOST,
+    port: HTTP_PORT,
+    phoneUrl: getPrimaryPhoneUrl(HTTP_PORT),
+    urls,
   });
 });
 
@@ -718,6 +972,17 @@ app.post('/api/voice-preferences', (req: Request, res: Response) => {
   });
 });
 
+// Backward-compatible alias
+app.post('/api/voice-responses', (req: Request, res: Response) => {
+  const { enabled } = req.body;
+  voicePreferences.voiceResponsesEnabled = !!enabled;
+  debugLog(`[Preferences] Updated (legacy): voiceResponses=${voicePreferences.voiceResponsesEnabled}`);
+  res.json({
+    success: true,
+    preferences: voicePreferences,
+  });
+});
+
 // API for voice input state
 app.post('/api/voice-input-state', (req: Request, res: Response) => {
   const { active } = req.body;
@@ -730,6 +995,17 @@ app.post('/api/voice-input-state', (req: Request, res: Response) => {
   res.json({
     success: true,
     voiceInputActive: voicePreferences.voiceInputActive
+  });
+});
+
+// Backward-compatible alias
+app.post('/api/voice-input', (req: Request, res: Response) => {
+  const { active } = req.body;
+  voicePreferences.voiceInputActive = !!active;
+  debugLog(`[Voice Input] (legacy) ${voicePreferences.voiceInputActive ? 'Started' : 'Stopped'} listening`);
+  res.json({
+    success: true,
+    voiceInputActive: voicePreferences.voiceInputActive,
   });
 });
 
@@ -791,9 +1067,9 @@ app.post('/api/speak', async (req: Request, res: Response) => {
   }
 });
 
-// API for system text-to-speech (always uses Mac say command)
+// API for system text-to-speech (cross-platform fallback)
 app.post('/api/speak-system', async (req: Request, res: Response) => {
-  const { text, rate = 150 } = req.body;
+  const { text, rate: requestedRate = 150 } = req.body;
 
   if (!text || !text.trim()) {
     res.status(400).json({ error: 'Text is required' });
@@ -801,14 +1077,25 @@ app.post('/api/speak-system', async (req: Request, res: Response) => {
   }
 
   try {
-    // Execute text-to-speech using macOS say command
-    // Note: Mac say command doesn't support volume control
-    await execAsync(`say -r ${rate} "${text.replace(/"/g, '\\"')}"`);
-    debugLog(`[Speak System] Spoke text using macOS say: "${text}" (rate: ${rate})`);
+    const rateNumber = Number.isFinite(Number(requestedRate)) ? Number(requestedRate) : 150;
+    const rate = clampNumber(Math.round(rateNumber), 80, 320);
+    const engine = await resolveSystemTTSEngine();
+
+    if (!engine) {
+      res.status(500).json({
+        error: 'No system TTS engine found',
+        details: 'Install spd-say, espeak-ng, or espeak on Linux (or use browser voice).',
+      });
+      return;
+    }
+
+    const normalizedText = String(text).replace(/\s+/g, ' ').trim();
+    await execFileAsync(engine.command, engine.buildArgs(normalizedText, rate));
+    debugLog(`[Speak System] Spoke text via ${engine.name}: "${normalizedText}" (rate: ${rate})`);
 
     res.json({
       success: true,
-      message: 'Text spoken successfully via system voice'
+      message: `Text spoken successfully via ${engine.name}`
     });
   } catch (error) {
     debugLog(`[Speak System] Failed to speak text: ${error}`);
@@ -830,15 +1117,19 @@ app.get('/legacy', (_req: Request, res: Response) => {
 });
 
 // Start HTTP server
-app.listen(HTTP_PORT, async () => {
-  if (!IS_MCP_MANAGED) {
-    console.log(`[HTTP] Server listening on http://localhost:${HTTP_PORT}`);
-    console.log(`[Mode] Running in ${IS_MCP_MANAGED ? 'MCP-managed' : 'standalone'} mode`);
-  } else {
-    // In MCP mode, write to stderr to avoid interfering with protocol
-    console.error(`[HTTP] Server listening on http://localhost:${HTTP_PORT}`);
-    console.error(`[Mode] Running in MCP-managed mode`);
+app.listen(HTTP_PORT, HTTP_HOST, async () => {
+  const logFn = IS_MCP_MANAGED ? console.error : console.log;
+  const urls = getNetworkUrls(HTTP_PORT);
+  const phoneUrls = urls.filter((url) => !url.includes('localhost'));
+
+  logFn(`[HTTP] Server listening on http://localhost:${HTTP_PORT}`);
+  if (phoneUrls.length > 0) {
+    phoneUrls.forEach((url) => {
+      logFn(`[HTTP] Phone access URL: ${url}`);
+    });
   }
+
+  logFn(`[Mode] Running in ${IS_MCP_MANAGED ? 'MCP-managed' : 'standalone'} mode`);
 
   // Auto-open browser if no frontend connects within 3 seconds
   const autoOpenBrowser = process.env.MCP_VOICE_HOOKS_AUTO_OPEN_BROWSER !== 'false'; // Default to true

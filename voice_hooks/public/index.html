@@ -380,6 +380,87 @@
             font-style: normal;
         }
 
+        .connection-card,
+        .draft-card {
+            background: #f8f9fa;
+            border: 1px solid #e4e7ea;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 14px;
+        }
+
+        .connection-card h4,
+        .draft-card h4 {
+            margin: 0 0 8px 0;
+            color: #333;
+            font-size: 15px;
+        }
+
+        .connection-links div {
+            margin-bottom: 4px;
+        }
+
+        .connection-links a {
+            color: #0056cc;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        .connection-links a:hover {
+            text-decoration: underline;
+        }
+
+        .draft-main {
+            font-size: 15px;
+            color: #222;
+            margin-bottom: 6px;
+            font-weight: 600;
+            word-break: break-word;
+        }
+
+        .draft-meta {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 10px;
+        }
+
+        .draft-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .draft-actions button {
+            border: none;
+            border-radius: 6px;
+            padding: 8px 12px;
+            cursor: pointer;
+            color: #fff;
+            font-size: 13px;
+        }
+
+        #confirmDraftBtn {
+            background: #28a745;
+        }
+
+        #discardDraftBtn {
+            background: #6c757d;
+        }
+
+        .connection-actions {
+            margin-top: 8px;
+        }
+
+        .connection-actions button {
+            border: none;
+            border-radius: 6px;
+            background: #0056cc;
+            color: #fff;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
         /* Toggle switch styles */
         .switch {
             position: relative;
@@ -433,6 +514,18 @@
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <h1 style="margin: 0;">Voice Mode for Gemini</h1>
 
+        </div>
+
+        <div class="subtitle">English-only voice control with confirmation before sending commands to Gemini.</div>
+
+        <div class="connection-card">
+            <h4>Open on your phone</h4>
+            <div class="connection-links" id="networkLinks">
+                <div class="empty-state">Loading local network URLs...</div>
+            </div>
+            <div class="connection-actions">
+                <button id="copyPhoneUrlBtn" style="display:none;">Copy</button>
+            </div>
         </div>
 
 
@@ -489,7 +582,16 @@
                 </div>
                 </div>
 
-            <div class="interim-text" id="interimText">Start speaking and your words will appear here...</div>
+            <div class="interim-text" id="interimText">Click Start Listening and speak in English.</div>
+            <div class="draft-card">
+                <h4>Command Draft</h4>
+                <div class="draft-main" id="pendingDraftText">No draft command yet.</div>
+                <div class="draft-meta" id="pendingDraftMeta">Speak a command in English to create a draft.</div>
+                <div class="draft-actions">
+                    <button id="confirmDraftBtn" disabled>Confirm and Send</button>
+                    <button id="discardDraftBtn" disabled>Discard</button>
+                </div>
+            </div>
             </div>
         <div class="tts-settings">
             <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -509,7 +611,7 @@
                 <div class="tts-control">
                     <label for="voiceSelect">Voice:</label>
                     <select id="voiceSelect">
-                        <option value="system">Mac System Voice</option>
+                        <option value="system">System Voice</option>
                         <optgroup label="Browser Voices (Cloud)" id="cloudVoicesGroup">
                         </optgroup>
                         <optgroup label="Browser Voices (Local)" id="localVoicesGroup">
@@ -518,9 +620,7 @@
                 </div>
                 <div id="systemVoiceInfo" class="system-voice-info" style="display: none;">
                     <span class="info-icon">ℹ️</span>
-                    <span class="info-text">You can download high quality voices in your Mac settings app. See the <a
-                            href="https://github.com/johnmatthewtennant/mcp-voice-hooks?tab=readme-ov-file#voice-responses"
-                            target="_blank">README</a></span>
+                    <span class="info-text">System voice quality depends on your OS voice packages. Browser voices usually sound smoother on phones.</span>
                 </div>
                 <div id="rateWarning" class="rate-warning" style="display: none;">
                     <span class="warning-icon">⚠️</span>
@@ -542,7 +642,7 @@
             All</button>
     </h3>
     <div class="info-message" id="infoMessage" style="display: none;">
-        <div class="empty-state">You need to send one message in the Gemini CLI to start voice interaction
+        <div class="empty-state">Gemini is waiting for your next confirmed voice command.
                 </div>
             </div>
             <div class="utterances-list" id="utterancesList">

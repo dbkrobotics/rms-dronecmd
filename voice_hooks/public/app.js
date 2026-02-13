@@ -2,44 +2,28 @@ class VoiceHooksClient {
     constructor() {
         this.baseUrl = window.location.origin;
         this.debug = localStorage.getItem('voiceHooksDebug') === 'true';
+
+        // Core UI
         this.refreshBtn = document.getElementById('refreshBtn');
         this.clearAllBtn = document.getElementById('clearAllBtn');
         this.utterancesList = document.getElementById('utterancesList');
         this.infoMessage = document.getElementById('infoMessage');
-
-        // Voice controls
         this.listenBtn = document.getElementById('listenBtn');
         this.listenBtnText = document.getElementById('listenBtnText');
         this.listeningIndicator = document.getElementById('listeningIndicator');
         this.interimText = document.getElementById('interimText');
 
-        // Send mode controls
-        this.sendModeAutomatic = document.getElementById('sendModeAutomatic');
-        this.sendModeWait = document.getElementById('sendModeWait');
-        this.triggerWordControls = document.getElementById('triggerWordControls');
-        this.triggerWordInput = document.getElementById('triggerWordInput');
-        this.sendNowBtn = document.getElementById('sendNowBtn');
-        this.queuedUtterancesSection = document.getElementById('queuedUtterancesSection');
-        this.queuedUtterancesList = document.getElementById('queuedUtterancesList');
-        this.queuedCount = document.getElementById('queuedCount');
+        // Confirmation UI
+        this.pendingDraftText = document.getElementById('pendingDraftText');
+        this.pendingDraftMeta = document.getElementById('pendingDraftMeta');
+        this.confirmDraftBtn = document.getElementById('confirmDraftBtn');
+        this.discardDraftBtn = document.getElementById('discardDraftBtn');
 
-        // Utterance queue for wait mode
-        this.utteranceQueue = [];
-        this.sendMode = 'automatic'; // 'automatic' or 'wait'
-        this.triggerWord = '';
+        // Network UI
+        this.networkLinks = document.getElementById('networkLinks');
+        this.copyPhoneUrlBtn = document.getElementById('copyPhoneUrlBtn');
 
-        // Speech recognition
-        this.recognition = null;
-        this.isListening = false;
-        this.initializeSpeechRecognition();
-
-        // Speech synthesis
-        this.initializeSpeechSynthesis();
-
-        // Server-Sent Events for TTS
-        this.initializeTTSEvents();
-
-        // TTS controls
+        // Voice controls
         this.languageSelect = document.getElementById('languageSelect');
         this.voiceSelect = document.getElementById('voiceSelect');
         this.speechRateSlider = document.getElementById('speechRate');
@@ -52,237 +36,268 @@ class VoiceHooksClient {
         this.rateWarning = document.getElementById('rateWarning');
         this.systemVoiceInfo = document.getElementById('systemVoiceInfo');
 
-        // Load saved preferences
+        // Speech capture state
+        this.isListening = false;
+        this.mediaStream = null;
+        this.mediaRecorder = null;
+        this.mediaRecorderMimeType = null;
+        this.recordingChunks = [];
+        this.segmentTimeout = null;
+        this.vadInterval = null;
+        this.audioContext = null;
+        this.analyser = null;
+        this.analyserBuffer = null;
+        this.segmentStartedAt = 0;
+        this.lastSpeechAt = 0;
+        this.segmentHasSpeech = false;
+        this.isTranscribing = false;
+        this.lastTranscription = { text: '', timestamp: 0 };
+        this.capturePausedForSpeech = false;
+        this.discardNextSegment = false;
+
+        // Tunables for VAD/segmentation
+        this.maxSegmentMs = 8000;
+        this.minSegmentMs = 900;
+        this.silenceMs = 750;
+        this.minBlobBytes = 1800;
+        this.vadThreshold = 0.015;
+
+        // Draft confirmation state
+        this.pendingDraft = '';
+
+        // Speech synthesis state
+        this.voices = [];
+        this.selectedVoice = 'system';
+        this.speechRate = 1.0;
+        this.speechPitch = 1.0;
+        this.ttsQueue = [];
+        this.isSpeaking = false;
+
+        this.hideLegacySendModeControls();
+        this.initializeSpeechSynthesis();
+        this.initializeTTSEvents();
         this.loadPreferences();
-
         this.setupEventListeners();
-        this.loadData();
+        this.updatePendingDraftUI('No draft command yet.', 'Speak a command in English to create a draft.');
 
-        // Auto-refresh every 2 seconds
+        this.loadData();
+        this.loadNetworkInfo();
+
         setInterval(() => this.loadData(), 2000);
     }
 
-    initializeSpeechRecognition() {
-        // Check for browser support
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-        if (!SpeechRecognition) {
-            console.error('Speech recognition not supported in this browser');
-            this.listenBtn.disabled = true;
-            this.listenBtnText.textContent = 'Not Supported';
-            return;
+    hideLegacySendModeControls() {
+        const legacyControls = document.querySelector('.send-mode-controls');
+        if (legacyControls) {
+            legacyControls.style.display = 'none';
         }
-
-        this.recognition = new SpeechRecognition();
-        this.recognition.continuous = true;
-        this.recognition.interimResults = true;
-
-        // Handle results
-        this.recognition.onresult = (event) => {
-            let interimTranscript = '';
-
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const transcript = event.results[i][0].transcript;
-
-                if (event.results[i].isFinal) {
-                    // User paused - handle based on send mode
-                    if (this.sendMode === 'automatic') {
-                        // Send immediately
-                        this.sendVoiceUtterance(transcript);
-                    } else {
-                        // Queue the utterance and check for trigger word
-                        this.queueUtterance(transcript);
-                    }
-                    // Restore placeholder text
-                    this.interimText.textContent = 'Start speaking and your words will appear here...';
-                    this.interimText.classList.remove('active');
-                } else {
-                    // Still speaking - show interim results
-                    interimTranscript += transcript;
-                }
-            }
-
-            if (interimTranscript) {
-                this.interimText.textContent = interimTranscript;
-                this.interimText.classList.add('active');
-            }
-        };
-
-        // Handle errors
-        this.recognition.onerror = (event) => {
-            console.error('Speech recognition error:', event.error);
-
-            if (event.error === 'no-speech') {
-                // Continue listening
-                return;
-            }
-
-            if (event.error === 'not-allowed') {
-                alert('Microphone access denied. Please allow microphone access to use voice input.');
-            } else {
-                alert(`Speech recognition error: ${event.error}`);
-            }
-
-            this.stopListening();
-        };
-
-        // Handle end
-        this.recognition.onend = () => {
-            if (this.isListening) {
-                // Restart recognition to continue listening
-                try {
-                    this.recognition.start();
-                } catch (e) {
-                    console.error('Failed to restart recognition:', e);
-                    this.stopListening();
-                }
-            }
-        };
     }
 
     setupEventListeners() {
-        this.refreshBtn.addEventListener('click', () => this.loadData());
-        this.clearAllBtn.addEventListener('click', () => this.clearAllUtterances());
-        this.listenBtn.addEventListener('click', () => this.toggleListening());
+        if (this.refreshBtn) {
+            this.refreshBtn.addEventListener('click', () => this.loadData());
+        }
 
-        // Language filter
+        if (this.clearAllBtn) {
+            this.clearAllBtn.addEventListener('click', () => this.clearAllUtterances());
+        }
+
+        if (this.listenBtn) {
+            this.listenBtn.addEventListener('click', () => this.toggleListening());
+        }
+
+        if (this.confirmDraftBtn) {
+            this.confirmDraftBtn.addEventListener('click', () => this.confirmPendingDraft());
+        }
+
+        if (this.discardDraftBtn) {
+            this.discardDraftBtn.addEventListener('click', () => this.discardPendingDraft(true));
+        }
+
+        if (this.copyPhoneUrlBtn) {
+            this.copyPhoneUrlBtn.addEventListener('click', () => this.copyPrimaryPhoneUrl());
+        }
+
         if (this.languageSelect) {
             this.languageSelect.addEventListener('change', () => {
-                // Save language preference
                 localStorage.setItem('selectedLanguage', this.languageSelect.value);
-                // Repopulate voice list with filtered voices
                 this.populateVoiceList();
             });
         }
 
-        // TTS controls
-        this.voiceSelect.addEventListener('change', (e) => {
-            this.selectedVoice = e.target.value;
-            // Save selected voice to localStorage
-            localStorage.setItem('selectedVoice', this.selectedVoice);
-            this.updateVoicePreferences();
-            this.updateVoiceWarnings();
-        });
+        if (this.voiceSelect) {
+            this.voiceSelect.addEventListener('change', (event) => {
+                this.selectedVoice = event.target.value;
+                localStorage.setItem('selectedVoice', this.selectedVoice);
+                this.updateVoiceWarnings();
+            });
+        }
 
-        this.speechRateSlider.addEventListener('input', (e) => {
-            this.speechRate = parseFloat(e.target.value);
-            this.speechRateInput.value = this.speechRate.toFixed(1);
-            // Save rate to localStorage
-            localStorage.setItem('speechRate', this.speechRate.toString());
-        });
-
-        this.speechRateInput.addEventListener('input', (e) => {
-            let value = parseFloat(e.target.value);
-            if (!isNaN(value)) {
-                value = Math.max(0.5, Math.min(5, value)); // Clamp to valid range
-                this.speechRate = value;
-                this.speechRateSlider.value = value.toString();
-                this.speechRateInput.value = value.toFixed(1);
-                // Save rate to localStorage
+        if (this.speechRateSlider && this.speechRateInput) {
+            this.speechRateSlider.addEventListener('input', (event) => {
+                this.speechRate = parseFloat(event.target.value);
+                this.speechRateInput.value = this.speechRate.toFixed(1);
                 localStorage.setItem('speechRate', this.speechRate.toString());
-            }
-        });
+            });
 
-        this.testTTSBtn.addEventListener('click', () => {
-            this.speakText('This is Voice Mode for Gemini. How can I help you today?');
-        });
+            this.speechRateInput.addEventListener('input', (event) => {
+                const parsed = parseFloat(event.target.value);
+                if (Number.isNaN(parsed)) {
+                    return;
+                }
 
-        // Voice toggle listeners
-        this.voiceResponsesToggle.addEventListener('change', (e) => {
-            const enabled = e.target.checked;
-            localStorage.setItem('voiceResponsesEnabled', enabled);
-            this.updateVoicePreferences();
-            this.updateVoiceOptionsVisibility();
-        });
+                this.speechRate = Math.max(0.5, Math.min(5, parsed));
+                this.speechRateInput.value = this.speechRate.toFixed(1);
+                this.speechRateSlider.value = this.speechRate.toString();
+                localStorage.setItem('speechRate', this.speechRate.toString());
+            });
+        }
 
-        // Send mode listeners
-        this.sendModeAutomatic.addEventListener('change', (e) => {
-            if (e.target.checked) {
-                this.sendMode = 'automatic';
-                this.updateSendModeUI();
-                localStorage.setItem('sendMode', 'automatic');
-            }
-        });
+        if (this.testTTSBtn) {
+            this.testTTSBtn.addEventListener('click', () => {
+                this.enqueueSpeech('Voice check. Your assistant is ready.', {
+                    interrupt: true,
+                    force: true,
+                });
+            });
+        }
 
-        this.sendModeWait.addEventListener('change', (e) => {
-            if (e.target.checked) {
-                this.sendMode = 'wait';
-                this.updateSendModeUI();
-                localStorage.setItem('sendMode', 'wait');
-            }
-        });
-
-        this.triggerWordInput.addEventListener('input', (e) => {
-            this.triggerWord = e.target.value.trim();
-            localStorage.setItem('triggerWord', this.triggerWord);
-        });
-
-        this.sendNowBtn.addEventListener('click', () => {
-            this.sendQueuedUtterances();
-        });
+        if (this.voiceResponsesToggle) {
+            this.voiceResponsesToggle.addEventListener('change', (event) => {
+                const enabled = event.target.checked;
+                localStorage.setItem('voiceResponsesEnabled', String(enabled));
+                this.updateVoiceOptionsVisibility();
+                this.updateVoicePreferences();
+            });
+        }
     }
-
 
     async loadData() {
         try {
-            // Load utterances
-            const utterancesResponse = await fetch(`${this.baseUrl}/api/utterances?limit=20`);
-            if (utterancesResponse.ok) {
-                const data = await utterancesResponse.json();
-                this.updateUtterancesList(data.utterances);
+            const response = await fetch(`${this.baseUrl}/api/utterances?limit=30`);
+            if (!response.ok) {
+                return;
+            }
+
+            const data = await response.json();
+            this.updateUtterancesList(data.utterances || []);
+        } catch (error) {
+            this.debugLog('Failed to load utterances', error);
+        }
+    }
+
+    async loadNetworkInfo() {
+        if (!this.networkLinks) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`${this.baseUrl}/api/network-info`);
+            if (!response.ok) {
+                return;
+            }
+
+            const data = await response.json();
+            const urls = Array.isArray(data.urls) ? data.urls : [];
+            const phoneUrls = urls.filter((url) => !url.includes('localhost'));
+
+            if (phoneUrls.length === 0) {
+                this.networkLinks.innerHTML = `<div class="empty-state">No LAN IP detected. Use ${this.escapeHtml(this.baseUrl)} on this machine.</div>`;
+                if (this.copyPhoneUrlBtn) {
+                    this.copyPhoneUrlBtn.style.display = 'none';
+                }
+                return;
+            }
+
+            this.primaryPhoneUrl = data.phoneUrl || phoneUrls[0];
+            this.networkLinks.innerHTML = phoneUrls
+                .map((url) => `<div><a href="${this.escapeHtml(url)}" target="_blank" rel="noreferrer">${this.escapeHtml(url)}</a></div>`)
+                .join('');
+
+            if (this.copyPhoneUrlBtn) {
+                this.copyPhoneUrlBtn.style.display = '';
             }
         } catch (error) {
-            console.error('Failed to load data:', error);
+            this.debugLog('Failed to load network info', error);
+        }
+    }
+
+    async copyPrimaryPhoneUrl() {
+        if (!this.primaryPhoneUrl || !navigator.clipboard) {
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(this.primaryPhoneUrl);
+            if (this.copyPhoneUrlBtn) {
+                this.copyPhoneUrlBtn.textContent = 'Copied';
+                setTimeout(() => {
+                    this.copyPhoneUrlBtn.textContent = 'Copy';
+                }, 1500);
+            }
+        } catch (error) {
+            this.debugLog('Failed to copy phone URL', error);
         }
     }
 
     updateUtterancesList(utterances) {
+        if (!this.utterancesList || !this.infoMessage) {
+            return;
+        }
+
         if (utterances.length === 0) {
             this.utterancesList.innerHTML = '<div class="empty-state">Nothing yet.</div>';
             this.infoMessage.style.display = 'none';
             return;
         }
 
-        // Check if all messages are pending
-        const allPending = utterances.every(u => u.status === 'pending');
-        if (allPending) {
-            // Show info message but don't replace the utterances list
-            this.infoMessage.style.display = 'block';
-        } else {
-            // Hide info message when at least one utterance is delivered
-            this.infoMessage.style.display = 'none';
-        }
+        const allPending = utterances.every((utterance) => utterance.status === 'pending');
+        this.infoMessage.style.display = allPending ? 'block' : 'none';
 
-        this.utterancesList.innerHTML = utterances.map(utterance => `
-            <div class="utterance-item">
-                <div class="utterance-text">${this.escapeHtml(utterance.text)}</div>
-                <div class="utterance-meta">
-                    <div>${this.formatTimestamp(utterance.timestamp)}</div>
-                    <div class="utterance-status status-${utterance.status}">
-                        ${utterance.status.toUpperCase()}
+        this.utterancesList.innerHTML = utterances
+            .map((utterance) => {
+                const safeText = this.escapeHtml(utterance.text);
+                const status = this.escapeHtml(utterance.status || 'pending');
+                const timestamp = this.escapeHtml(this.formatTimestamp(utterance.timestamp));
+                const deleteButton = utterance.status === 'pending'
+                    ? `<button class="delete-btn" data-id="${utterance.id}" title="Delete">&times;</button>`
+                    : '';
+
+                return `
+                    <div class="utterance-item">
+                        <div class="utterance-text">${safeText}</div>
+                        <div class="utterance-meta">
+                            <div>${timestamp}</div>
+                            <div class="utterance-status status-${status}">${status.toUpperCase()}</div>
+                            ${deleteButton}
+                        </div>
                     </div>
-                    ${utterance.status === 'pending' ? `<button class="delete-btn" data-id="${utterance.id}" title="Delete">×</button>` : ''}
-                </div>
-            </div>
-        `).join('');
+                `;
+            })
+            .join('');
 
-        // Add event listeners for delete buttons
-        document.querySelectorAll('.delete-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const id = e.target.dataset.id;
-                this.deleteUtterance(id);
+        this.utterancesList.querySelectorAll('.delete-btn').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                const id = event.currentTarget.dataset.id;
+                if (id) {
+                    this.deleteUtterance(id);
+                }
             });
         });
     }
 
     formatTimestamp(timestamp) {
+        if (!timestamp) {
+            return '';
+        }
+
         const date = new Date(timestamp);
         return date.toLocaleTimeString();
     }
 
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = String(text ?? '');
         return div.innerHTML;
     }
 
@@ -295,48 +310,475 @@ class VoiceHooksClient {
     }
 
     async startListening() {
-        if (!this.recognition) {
-            alert('Speech recognition not supported in this browser');
+        if (this.isListening) {
+            return;
+        }
+
+        if (!window.MediaRecorder || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert('This browser does not support microphone recording with MediaRecorder.');
             return;
         }
 
         try {
-            this.recognition.start();
+            await this.ensureMediaStream();
             this.isListening = true;
-            this.listenBtn.classList.add('listening');
-            this.listenBtnText.textContent = 'Stop Listening';
-            this.listeningIndicator.classList.add('active');
-            this.debugLog('Started listening');
-
-            // Notify server that voice input is active
+            this.setListeningUI(true);
+            this.setInterimText('Listening for English voice commands...');
             await this.updateVoiceInputState(true);
-        } catch (e) {
-            console.error('Failed to start recognition:', e);
-            alert('Failed to start speech recognition. Please try again.');
+            this.startRecordingSegment();
+        } catch (error) {
+            console.error('Failed to start listening:', error);
+            alert('Microphone access failed. Please allow mic permission and try again.');
+            this.cleanupMediaResources();
+            this.setListeningUI(false);
         }
     }
 
     async stopListening() {
-        if (this.recognition) {
-            this.isListening = false;
-            this.recognition.stop();
-            this.listenBtn.classList.remove('listening');
-            this.listenBtnText.textContent = 'Start Listening';
-            this.listeningIndicator.classList.remove('active');
-            this.interimText.textContent = 'Start speaking and your words will appear here...';
-            this.interimText.classList.remove('active');
-            this.debugLog('Stopped listening');
+        if (!this.isListening) {
+            return;
+        }
 
-            // Notify server that voice input is no longer active
-            await this.updateVoiceInputState(false);
+        this.isListening = false;
+        this.capturePausedForSpeech = false;
+        this.discardNextSegment = false;
+        this.clearSegmentTimers();
+
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+            this.mediaRecorder.stop();
+        }
+
+        this.cleanupMediaResources();
+        this.setListeningUI(false);
+        this.setInterimText('Listening stopped. Click Start Listening to resume.');
+        await this.updateVoiceInputState(false);
+    }
+
+    async ensureMediaStream() {
+        if (this.mediaStream) {
+            return;
+        }
+
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                channelCount: 1,
+            },
+        });
+
+        this.mediaRecorderMimeType = this.pickRecorderMimeType();
+
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextCtor) {
+            this.audioContext = new AudioContextCtor();
+            const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 2048;
+            this.analyserBuffer = new Uint8Array(this.analyser.fftSize);
+            source.connect(this.analyser);
+        }
+    }
+
+    pickRecorderMimeType() {
+        const candidates = [
+            'audio/webm;codecs=opus',
+            'audio/webm',
+            'audio/mp4',
+            'audio/ogg;codecs=opus',
+        ];
+
+        for (const candidate of candidates) {
+            if (MediaRecorder.isTypeSupported(candidate)) {
+                return candidate;
+            }
+        }
+
+        return '';
+    }
+
+    startRecordingSegment() {
+        if (!this.isListening || this.isTranscribing) {
+            return;
+        }
+
+        if (!this.mediaStream) {
+            return;
+        }
+
+        if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+            return;
+        }
+
+        const options = this.mediaRecorderMimeType ? { mimeType: this.mediaRecorderMimeType } : undefined;
+        this.mediaRecorder = new MediaRecorder(this.mediaStream, options);
+        this.recordingChunks = [];
+        this.segmentStartedAt = Date.now();
+        this.lastSpeechAt = 0;
+        this.segmentHasSpeech = false;
+        if (!this.analyser) {
+            // Fallback: if VAD is unavailable, always transcribe recorded segments.
+            this.segmentHasSpeech = true;
+        }
+
+        this.mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+                this.recordingChunks.push(event.data);
+            }
+        };
+
+        this.mediaRecorder.onerror = (event) => {
+            console.error('MediaRecorder error:', event.error);
+            this.setInterimText('Recording error. Restarting...');
+            this.clearSegmentTimers();
+            if (this.isListening) {
+                setTimeout(() => this.startRecordingSegment(), 500);
+            }
+        };
+
+        this.mediaRecorder.onstop = async () => {
+            const blob = new Blob(this.recordingChunks, {
+                type: this.mediaRecorderMimeType || 'audio/webm',
+            });
+
+            this.recordingChunks = [];
+            this.clearSegmentTimers();
+
+            await this.handleRecordedSegment(blob);
+
+            if (this.isListening && !this.capturePausedForSpeech) {
+                this.startRecordingSegment();
+            }
+        };
+
+        this.mediaRecorder.start(250);
+
+        this.segmentTimeout = setTimeout(() => {
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                this.mediaRecorder.stop();
+            }
+        }, this.maxSegmentMs);
+
+        this.vadInterval = setInterval(() => {
+            this.checkVoiceActivity();
+        }, 100);
+    }
+
+    checkVoiceActivity() {
+        if (!this.analyser || !this.analyserBuffer || !this.mediaRecorder || this.mediaRecorder.state === 'inactive') {
+            return;
+        }
+
+        this.analyser.getByteTimeDomainData(this.analyserBuffer);
+
+        let sum = 0;
+        for (let i = 0; i < this.analyserBuffer.length; i += 1) {
+            const centered = (this.analyserBuffer[i] - 128) / 128;
+            sum += centered * centered;
+        }
+
+        const rms = Math.sqrt(sum / this.analyserBuffer.length);
+        const now = Date.now();
+
+        if (rms > this.vadThreshold) {
+            this.segmentHasSpeech = true;
+            this.lastSpeechAt = now;
+        }
+
+        const elapsed = now - this.segmentStartedAt;
+        const shouldStopForSilence =
+            this.segmentHasSpeech &&
+            elapsed > this.minSegmentMs &&
+            this.lastSpeechAt > 0 &&
+            now - this.lastSpeechAt > this.silenceMs;
+
+        if (shouldStopForSilence && this.mediaRecorder.state !== 'inactive') {
+            this.mediaRecorder.stop();
+        }
+    }
+
+    clearSegmentTimers() {
+        if (this.segmentTimeout) {
+            clearTimeout(this.segmentTimeout);
+            this.segmentTimeout = null;
+        }
+
+        if (this.vadInterval) {
+            clearInterval(this.vadInterval);
+            this.vadInterval = null;
+        }
+    }
+
+    cleanupMediaResources() {
+        if (this.mediaStream) {
+            this.mediaStream.getTracks().forEach((track) => track.stop());
+            this.mediaStream = null;
+        }
+
+        if (this.audioContext) {
+            this.audioContext.close().catch(() => {});
+            this.audioContext = null;
+        }
+
+        this.analyser = null;
+        this.analyserBuffer = null;
+        this.mediaRecorder = null;
+    }
+
+    async handleRecordedSegment(blob) {
+        if (this.discardNextSegment) {
+            this.discardNextSegment = false;
+            return;
+        }
+
+        if (!blob || blob.size < this.minBlobBytes || !this.segmentHasSpeech) {
+            return;
+        }
+
+        if (this.isTranscribing) {
+            return;
+        }
+
+        this.isTranscribing = true;
+        this.setInterimText('Transcribing...');
+
+        try {
+            const text = await this.transcribeBlob(blob);
+            if (!text) {
+                this.setInterimText('No clear speech detected.');
+                return;
+            }
+
+            const now = Date.now();
+            if (this.lastTranscription.text === text && now - this.lastTranscription.timestamp < 2000) {
+                this.debugLog('Skipping duplicate transcription:', text);
+                return;
+            }
+
+            this.lastTranscription = { text, timestamp: now };
+            this.setInterimText(`Heard: ${text}`);
+            await this.handleRecognizedText(text);
+        } catch (error) {
+            console.error('Transcription failed:', error);
+            this.setInterimText('Transcription failed. Try speaking again.');
+        } finally {
+            this.isTranscribing = false;
+        }
+    }
+
+    async transcribeBlob(blob) {
+        const formData = new FormData();
+        const extension = this.getAudioExtension(this.mediaRecorderMimeType || blob.type);
+        const filename = `command.${extension}`;
+        formData.append('audio', blob, filename);
+        formData.append('hints', this.pendingDraft || '');
+
+        const response = await fetch(`${this.baseUrl}/api/transcribe`, {
+            method: 'POST',
+            body: formData,
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            const message = data?.error || 'Transcription request failed';
+            throw new Error(message);
+        }
+
+        return (data.text || '').trim();
+    }
+
+    getAudioExtension(mimeType) {
+        if (!mimeType) {
+            return 'webm';
+        }
+
+        if (mimeType.includes('ogg')) {
+            return 'ogg';
+        }
+
+        if (mimeType.includes('mp4')) {
+            return 'm4a';
+        }
+
+        return 'webm';
+    }
+
+    async handleRecognizedText(text) {
+        const normalized = this.normalizeTranscript(text);
+        if (!normalized) {
+            return;
+        }
+
+        if (!this.pendingDraft) {
+            this.pendingDraft = normalized;
+            this.updatePendingDraftUI(
+                this.pendingDraft,
+                'Say "confirm and execute" to run, or say "change to ..." to edit.'
+            );
+            this.enqueueSpeech(
+                `I heard: ${this.pendingDraft}. Say confirm and execute to run it, or say change to followed by your correction.`,
+                { interrupt: true, force: true }
+            );
+            return;
+        }
+
+        if (this.isConfirmPhrase(normalized)) {
+            await this.confirmPendingDraft();
+            return;
+        }
+
+        if (this.isCancelPhrase(normalized)) {
+            this.discardPendingDraft(false);
+            this.enqueueSpeech('Draft canceled. Please say your next command.', {
+                interrupt: true,
+                force: true,
+            });
+            return;
+        }
+
+        const correction = this.extractCorrection(normalized);
+        if (correction) {
+            this.pendingDraft = correction;
+            this.updatePendingDraftUI(
+                this.pendingDraft,
+                'Draft updated. Say "confirm and execute" when ready.'
+            );
+            this.enqueueSpeech(`Updated draft: ${this.pendingDraft}. Say confirm and execute when ready.`, {
+                interrupt: true,
+                force: true,
+            });
+            return;
+        }
+
+        // If user says a new sentence while draft exists, treat it as a replacement.
+        this.pendingDraft = normalized;
+        this.updatePendingDraftUI(
+            this.pendingDraft,
+            'Draft replaced. Say "confirm and execute" to run.'
+        );
+        this.enqueueSpeech(`I will use: ${this.pendingDraft}. Say confirm and execute when ready.`, {
+            interrupt: true,
+            force: true,
+        });
+    }
+
+    normalizeTranscript(text) {
+        if (!text) {
+            return '';
+        }
+
+        return text
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    isConfirmPhrase(text) {
+        const normalized = text.toLowerCase();
+        const confirmPatterns = [
+            /\bconfirm( it)?\b/,
+            /\bconfirm and execute\b/,
+            /\bexecute( now)?\b/,
+            /\brun( it| this)?\b/,
+            /\bgo ahead\b/,
+            /\byes\b/,
+            /\bok(?:ay)?\b/,
+            /\bthat'?s (right|correct)\b/,
+            /\bcorrect\b/,
+            /\bdo it\b/,
+        ];
+
+        return confirmPatterns.some((pattern) => pattern.test(normalized));
+    }
+
+    isCancelPhrase(text) {
+        const normalized = text.toLowerCase();
+        return /\b(cancel|discard|never mind|start over|drop it)\b/.test(normalized);
+    }
+
+    extractCorrection(text) {
+        const normalized = text.trim();
+        const patterns = [
+            /^change(?: it)? to\s+(.+)$/i,
+            /^update(?: it)? to\s+(.+)$/i,
+            /^replace(?: it)? with\s+(.+)$/i,
+            /^correction[:\s]+(.+)$/i,
+            /^actually\s+(.+)$/i,
+            /^no[,\s]+use\s+(.+)$/i,
+        ];
+
+        for (const pattern of patterns) {
+            const match = normalized.match(pattern);
+            if (match && match[1]) {
+                return this.normalizeTranscript(match[1]);
+            }
+        }
+
+        return '';
+    }
+
+    async confirmPendingDraft() {
+        if (!this.pendingDraft) {
+            this.updatePendingDraftUI('No draft command yet.', 'Speak a command in English to create a draft.');
+            return;
+        }
+
+        const command = this.pendingDraft;
+        const success = await this.sendVoiceUtterance(command);
+
+        if (!success) {
+            this.enqueueSpeech('I could not send the command. Please try again.', {
+                interrupt: true,
+                force: true,
+            });
+            return;
+        }
+
+        this.pendingDraft = '';
+        this.updatePendingDraftUI('No draft command yet.', `Sent: ${command}`);
+        this.enqueueSpeech(`Executing: ${command}`, {
+            interrupt: true,
+            force: true,
+        });
+    }
+
+    discardPendingDraft(withVoiceFeedback) {
+        this.pendingDraft = '';
+        this.updatePendingDraftUI('No draft command yet.', 'Draft cleared. Speak a new command.');
+
+        if (withVoiceFeedback) {
+            this.enqueueSpeech('Draft cleared. Please speak your next command.', {
+                interrupt: true,
+                force: true,
+            });
+        }
+    }
+
+    updatePendingDraftUI(title, subtitle) {
+        if (this.pendingDraftText) {
+            this.pendingDraftText.textContent = title;
+        }
+
+        if (this.pendingDraftMeta) {
+            this.pendingDraftMeta.textContent = subtitle;
+        }
+
+        const hasDraft = Boolean(this.pendingDraft);
+        if (this.confirmDraftBtn) {
+            this.confirmDraftBtn.disabled = !hasDraft;
+        }
+
+        if (this.discardDraftBtn) {
+            this.discardDraftBtn.disabled = !hasDraft;
         }
     }
 
     async sendVoiceUtterance(text) {
-        const trimmedText = text.trim();
-        if (!trimmedText) return;
-
-        this.debugLog('Sending voice utterance:', trimmedText);
+        const trimmed = text.trim();
+        if (!trimmed) {
+            return false;
+        }
 
         try {
             const response = await fetch(`${this.baseUrl}/api/potential-utterances`, {
@@ -345,23 +787,29 @@ class VoiceHooksClient {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    text: trimmedText,
-                    timestamp: new Date().toISOString()
+                    text: trimmed,
+                    timestamp: new Date().toISOString(),
                 }),
             });
 
-            if (response.ok) {
-                this.loadData(); // Refresh the list
-            } else {
-                const error = await response.json();
-                console.error('Error sending voice utterance:', error);
+            if (!response.ok) {
+                const data = await response.json().catch(() => ({}));
+                this.debugLog('Failed to queue utterance', data);
+                return false;
             }
+
+            this.loadData();
+            return true;
         } catch (error) {
-            console.error('Failed to send voice utterance:', error);
+            this.debugLog('Failed to queue utterance', error);
+            return false;
         }
     }
 
     async clearAllUtterances() {
+        if (!this.clearAllBtn) {
+            return;
+        }
 
         this.clearAllBtn.disabled = true;
         this.clearAllBtn.textContent = 'Clearing...';
@@ -369,22 +817,13 @@ class VoiceHooksClient {
         try {
             const response = await fetch(`${this.baseUrl}/api/utterances`, {
                 method: 'DELETE',
-                headers: {
-                    'Content-Type': 'application/json',
-                }
             });
 
             if (response.ok) {
-                const result = await response.json();
-                this.loadData(); // Refresh the list
-                this.debugLog('Cleared all utterances:', result);
-            } else {
-                const error = await response.json();
-                alert(`Error: ${error.error || 'Failed to clear utterances'}`);
+                this.loadData();
             }
         } catch (error) {
-            console.error('Failed to clear utterances:', error);
-            alert('Failed to clear utterances. Make sure the server is running.');
+            this.debugLog('Failed to clear utterances', error);
         } finally {
             this.clearAllBtn.disabled = false;
             this.clearAllBtn.textContent = 'Clear All';
@@ -398,416 +837,305 @@ class VoiceHooksClient {
             });
 
             if (response.ok) {
-                this.loadData(); // Refresh the list
-                this.debugLog('Deleted utterance:', id);
-            } else {
-                const error = await response.json();
-                console.error('Error deleting utterance:', error);
+                this.loadData();
             }
         } catch (error) {
-            console.error('Failed to delete utterance:', error);
+            this.debugLog('Failed to delete utterance', error);
         }
     }
 
-    debugLog(...args) {
-        if (this.debug) {
-            console.log(...args);
-        }
-    }
-
-    initializeSpeechSynthesis() {
-        // Check for browser support
-        if (!window.speechSynthesis) {
-            console.warn('Speech synthesis not supported in this browser');
+    setListeningUI(active) {
+        if (!this.listenBtn || !this.listenBtnText || !this.listeningIndicator) {
             return;
         }
 
-        // Get available voices
-        this.voices = [];
-        
-        // Enhanced voice loading with deduplication
-        const loadVoices = () => {
-            const voices = window.speechSynthesis.getVoices();
-            
-            // Deduplicate voices - keep the first occurrence of each unique voice
-            const deduplicatedVoices = [];
-            const seen = new Set();
-            
-            voices.forEach(voice => {
-                // Create a unique key based on name, language, and URI
-                const key = `${voice.name}-${voice.lang}-${voice.voiceURI}`;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    deduplicatedVoices.push(voice);
-                }
-            });
-            
-            this.voices = deduplicatedVoices;
-            this.populateVoiceList();
-        };
+        if (active) {
+            this.listenBtn.classList.add('listening');
+            this.listenBtnText.textContent = 'Stop Listening';
+            this.listeningIndicator.classList.add('active');
+        } else {
+            this.listenBtn.classList.remove('listening');
+            this.listenBtnText.textContent = 'Start Listening';
+            this.listeningIndicator.classList.remove('active');
+        }
+    }
 
-        // Load voices initially and with a delayed retry for reliability
-        loadVoices();
-        setTimeout(loadVoices, 100);
-        
-        // Set up voice change listener
-        if (window.speechSynthesis.onvoiceschanged !== undefined) {
-            window.speechSynthesis.onvoiceschanged = loadVoices;
+    setInterimText(text) {
+        if (!this.interimText) {
+            return;
         }
 
-        // Set default voice preferences
-        this.speechRate = 1.0;
-        this.speechPitch = 1.0;
-        this.selectedVoice = 'system';
+        this.interimText.textContent = text;
+        this.interimText.classList.toggle('active', Boolean(text));
     }
 
     initializeTTSEvents() {
-        // Connect to Server-Sent Events endpoint
         this.eventSource = new EventSource(`${this.baseUrl}/api/tts-events`);
 
         this.eventSource.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
-                this.debugLog('TTS Event:', data);
-
                 if (data.type === 'speak' && data.text) {
-                    this.speakText(data.text);
+                    this.enqueueSpeech(data.text, {
+                        interrupt: true,
+                        force: false,
+                    });
                 } else if (data.type === 'waitStatus') {
-                    this.handleWaitStatus(data.isWaiting);
+                    this.handleWaitStatus(Boolean(data.isWaiting));
                 }
             } catch (error) {
-                console.error('Failed to parse TTS event:', error);
+                this.debugLog('Failed to parse SSE message', error);
             }
         };
 
-        this.eventSource.onerror = (error) => {
-            console.error('SSE connection error:', error);
-            // Will automatically reconnect
+        this.eventSource.onopen = () => {
+            this.syncStateWithServer();
         };
 
-        this.eventSource.onopen = () => {
-            this.debugLog('TTS Events connected');
-            // Sync state when connection is established (includes reconnections)
-            this.syncStateWithServer();
+        this.eventSource.onerror = (error) => {
+            this.debugLog('SSE connection error', error);
         };
     }
 
-    populateLanguageFilter() {
-        if (!this.languageSelect || !this.voices) return;
+    handleWaitStatus(isWaiting) {
+        if (!this.listeningIndicator) {
+            return;
+        }
 
-        // Get current selection
-        const currentSelection = this.languageSelect.value || 'en-US';
+        const textNode = this.listeningIndicator.querySelector('span');
+        if (!textNode) {
+            return;
+        }
 
-        // Clear existing options
-        this.languageSelect.innerHTML = '';
+        if (isWaiting) {
+            this.listeningIndicator.classList.add('waiting-mode');
+            textNode.textContent = 'Gemini is waiting for your next voice command';
+        } else {
+            this.listeningIndicator.classList.remove('waiting-mode');
+            textNode.textContent = 'Listening...';
+        }
+    }
 
-        // Add "All Languages" option
-        const allOption = document.createElement('option');
-        allOption.value = 'all';
-        allOption.textContent = 'All Languages';
-        this.languageSelect.appendChild(allOption);
+    initializeSpeechSynthesis() {
+        if (!window.speechSynthesis) {
+            this.debugLog('speechSynthesis is unavailable in this browser');
+            return;
+        }
 
-        // Collect unique language codes
-        const languageCodes = new Set();
-        this.voices.forEach(voice => {
-            languageCodes.add(voice.lang);
-        });
+        const loadVoices = () => {
+            const available = window.speechSynthesis.getVoices();
+            const deduplicated = [];
+            const seen = new Set();
 
-        // Sort and add language codes
-        Array.from(languageCodes).sort().forEach(lang => {
-            const option = document.createElement('option');
-            option.value = lang;
-            option.textContent = lang;
-            this.languageSelect.appendChild(option);
-        });
+            available.forEach((voice) => {
+                const key = `${voice.name}-${voice.lang}-${voice.voiceURI}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    deduplicated.push(voice);
+                }
+            });
 
-        // Restore selection
-        this.languageSelect.value = currentSelection;
-        if (this.languageSelect.value !== currentSelection) {
-            // If saved selection not available, default to en-US
-            this.languageSelect.value = 'en-US';
+            this.voices = deduplicated;
+            this.populateVoiceList();
+        };
+
+        loadVoices();
+        setTimeout(loadVoices, 120);
+
+        if (window.speechSynthesis.onvoiceschanged !== undefined) {
+            window.speechSynthesis.onvoiceschanged = loadVoices;
         }
     }
 
     populateVoiceList() {
-        if (!this.voiceSelect || !this.localVoicesGroup || !this.cloudVoicesGroup) return;
-        
+        if (!this.voiceSelect || !this.localVoicesGroup || !this.cloudVoicesGroup || !this.languageSelect) {
+            return;
+        }
 
-        // First populate the language filter
-        this.populateLanguageFilter();
-
-        // Clear existing browser voice options
+        const selectedLanguage = this.languageSelect.value || 'en-US';
         this.localVoicesGroup.innerHTML = '';
         this.cloudVoicesGroup.innerHTML = '';
 
-        // List of voices to exclude (novelty, Eloquence, and non-premium voices)
-        const excludedVoices = [
-            // Eloquence voices
-            'Eddy', 'Flo', 'Grandma', 'Grandpa', 'Reed', 'Rocko', 'Sandy', 'Shelley',
-            // Novelty voices
-            'Albert', 'Bad News', 'Bahh', 'Bells', 'Boing', 'Bubbles', 'Cellos',
-            'Good News', 'Jester', 'Organ', 'Superstar', 'Trinoids', 'Whisper',
-            'Wobble', 'Zarvox',
-            // Voices without premium options
-            'Fred', 'Junior', 'Kathy', 'Ralph'
-        ];
+        this.populateLanguageFilter();
 
-        // Get selected language filter
-        const selectedLanguage = this.languageSelect ? this.languageSelect.value : 'en-US';
-
-        // Filter voices based on selected language
         this.voices.forEach((voice, index) => {
-            const voiceLang = voice.lang;
-            let shouldInclude = false;
-
-            if (selectedLanguage === 'all') {
-                // Include all languages
-                shouldInclude = true;
-            } else {
-                // Check if voice matches selected language/locale
-                shouldInclude = voiceLang === selectedLanguage;
-            }
-
-            if (shouldInclude) {
-                // Check if voice should be excluded
-                const voiceName = voice.name;
-                const isExcluded = excludedVoices.some(excluded =>
-                    voiceName.toLowerCase().startsWith(excluded.toLowerCase())
-                );
-
-                if (!isExcluded) {
-                    const option = document.createElement('option');
-                    option.value = `browser:${index}`;
-                    // Show voice name and language code
-                    option.textContent = `${voice.name} (${voice.lang})`;
-
-                    // Categorize voices
-                    if (voice.localService) {
-                        this.localVoicesGroup.appendChild(option);
-                        this.debugLog(voice.voiceURI);
-                    } else {
-                        this.cloudVoicesGroup.appendChild(option);
-                    }
-                }
-            }
-        });
-
-        // Hide empty groups
-        if (this.localVoicesGroup.children.length === 0) {
-            this.localVoicesGroup.style.display = 'none';
-        } else {
-            this.localVoicesGroup.style.display = '';
-        }
-
-        if (this.cloudVoicesGroup.children.length === 0) {
-            this.cloudVoicesGroup.style.display = 'none';
-        } else {
-            this.cloudVoicesGroup.style.display = '';
-        }
-
-        // Restore saved selection
-        const savedVoice = localStorage.getItem('selectedVoice');
-        if (savedVoice) {
-            this.voiceSelect.value = savedVoice;
-            this.selectedVoice = savedVoice;
-        } else {
-            // Look for Google US English Male voice first
-            let googleUSMaleIndex = -1;
-            let microsoftAndrewIndex = -1;
-
-            this.voices.forEach((voice, index) => {
-                const voiceName = voice.name.toLowerCase();
-
-                // Check for Google US English Male
-                if (voiceName.includes('google') &&
-                    voiceName.includes('us') &&
-                    voiceName.includes('english')) {
-                    googleUSMaleIndex = index;
-                }
-
-                // Check for Microsoft Andrew Online
-                if (voiceName.includes('microsoft') &&
-                    voiceName.includes('andrew') &&
-                    voiceName.includes('online')) {
-                    microsoftAndrewIndex = index;
-                }
-            });
-
-            if (googleUSMaleIndex !== -1) {
-                this.selectedVoice = `browser:${googleUSMaleIndex}`;
-                this.voiceSelect.value = this.selectedVoice;
-                this.debugLog('Defaulting to Google US English Male voice');
-            } else if (microsoftAndrewIndex !== -1) {
-                this.selectedVoice = `browser:${microsoftAndrewIndex}`;
-                this.voiceSelect.value = this.selectedVoice;
-                this.debugLog('Google US English Male not found, defaulting to Microsoft Andrew Online');
-            } else {
-                this.selectedVoice = 'system';
-                this.debugLog('Preferred voices not found, using system default');
-            }
-        }
-
-        // Update warnings based on selected voice
-        this.updateVoiceWarnings();
-    }
-
-    async speakText(text) {
-        // Check if we should use system voice
-        if (this.selectedVoice === 'system') {
-            // Use Mac system voice via server
-            try {
-                const response = await fetch(`${this.baseUrl}/api/speak-system`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        text: text,
-                        rate: Math.round(this.speechRate * 150) // Convert rate to words per minute
-                    }),
-                });
-
-                if (!response.ok) {
-                    const error = await response.json();
-                    console.error('Failed to speak via system voice:', error);
-                }
-            } catch (error) {
-                console.error('Failed to call speak-system API:', error);
-            }
-        } else {
-            // Use browser voice
-            if (!window.speechSynthesis) {
-                console.error('Speech synthesis not available');
+            const isEnglish = voice.lang.toLowerCase().startsWith('en');
+            if (!isEnglish) {
                 return;
             }
 
-            // Cancel any ongoing speech
-            window.speechSynthesis.cancel();
-
-            // Create utterance
-            const utterance = new SpeechSynthesisUtterance(text);
-
-            // Set voice if using browser voice
-            if (this.selectedVoice && this.selectedVoice.startsWith('browser:')) {
-                const voiceIndex = parseInt(this.selectedVoice.substring(8));
-                if (this.voices[voiceIndex]) {
-                    utterance.voice = this.voices[voiceIndex];
-                }
+            if (selectedLanguage !== 'all' && voice.lang !== selectedLanguage) {
+                return;
             }
 
-            // Set speech properties
-            utterance.rate = this.speechRate;
-            utterance.pitch = this.speechPitch;
+            const option = document.createElement('option');
+            option.value = `browser:${index}`;
+            option.textContent = `${voice.name} (${voice.lang})`;
 
-            // Event handlers
-            utterance.onstart = () => {
-                this.debugLog('Started speaking:', text);
-            };
+            if (voice.localService) {
+                this.localVoicesGroup.appendChild(option);
+            } else {
+                this.cloudVoicesGroup.appendChild(option);
+            }
+        });
 
-            utterance.onend = () => {
-                this.debugLog('Finished speaking');
-            };
+        const savedVoice = localStorage.getItem('selectedVoice');
+        if (savedVoice) {
+            this.selectedVoice = savedVoice;
+            this.voiceSelect.value = savedVoice;
+        } else {
+            this.selectedVoice = this.findDefaultBrowserVoice();
+            this.voiceSelect.value = this.selectedVoice;
+        }
 
-            utterance.onerror = (event) => {
-                console.error('Speech synthesis error:', event);
-            };
+        this.updateVoiceWarnings();
+    }
 
-            // Speak the text
-            window.speechSynthesis.speak(utterance);
+    findDefaultBrowserVoice() {
+        const preferredIndex = this.voices.findIndex((voice) => {
+            const name = voice.name.toLowerCase();
+            return (
+                name.includes('google') &&
+                name.includes('english') &&
+                voice.lang.toLowerCase().startsWith('en')
+            );
+        });
+
+        if (preferredIndex >= 0) {
+            return `browser:${preferredIndex}`;
+        }
+
+        const fallbackIndex = this.voices.findIndex((voice) => voice.lang.toLowerCase().startsWith('en'));
+        if (fallbackIndex >= 0) {
+            return `browser:${fallbackIndex}`;
+        }
+
+        return 'system';
+    }
+
+    populateLanguageFilter() {
+        if (!this.languageSelect) {
+            return;
+        }
+
+        const saved = localStorage.getItem('selectedLanguage') || 'en-US';
+        const languages = new Set(['all', 'en-US']);
+
+        this.voices.forEach((voice) => {
+            if (voice.lang.toLowerCase().startsWith('en')) {
+                languages.add(voice.lang);
+            }
+        });
+
+        this.languageSelect.innerHTML = '';
+        Array.from(languages)
+            .sort()
+            .forEach((lang) => {
+                const option = document.createElement('option');
+                option.value = lang;
+                option.textContent = lang === 'all' ? 'All English Voices' : lang;
+                this.languageSelect.appendChild(option);
+            });
+
+        this.languageSelect.value = saved;
+        if (this.languageSelect.value !== saved) {
+            this.languageSelect.value = 'en-US';
         }
     }
 
+    updateVoiceWarnings() {
+        if (!this.rateWarning || !this.systemVoiceInfo) {
+            return;
+        }
+
+        if (this.selectedVoice === 'system') {
+            this.systemVoiceInfo.style.display = 'flex';
+            this.rateWarning.style.display = 'none';
+            return;
+        }
+
+        if (this.selectedVoice.startsWith('browser:')) {
+            const index = parseInt(this.selectedVoice.substring(8), 10);
+            const voice = this.voices[index];
+
+            if (!voice) {
+                this.rateWarning.style.display = 'none';
+                this.systemVoiceInfo.style.display = 'none';
+                return;
+            }
+
+            this.rateWarning.style.display = voice.name.toLowerCase().includes('google') ? 'flex' : 'none';
+            this.systemVoiceInfo.style.display = voice.localService ? 'flex' : 'none';
+            return;
+        }
+
+        this.rateWarning.style.display = 'none';
+        this.systemVoiceInfo.style.display = 'none';
+    }
+
     loadPreferences() {
-        // Simple localStorage with defaults to true
         const storedVoiceResponses = localStorage.getItem('voiceResponsesEnabled');
+        const voiceResponsesEnabled = storedVoiceResponses === null ? true : storedVoiceResponses === 'true';
 
-        // Default to true if not stored
-        const voiceResponsesEnabled = storedVoiceResponses !== null
-            ? storedVoiceResponses === 'true'
-            : true;
+        if (this.voiceResponsesToggle) {
+            this.voiceResponsesToggle.checked = voiceResponsesEnabled;
+        }
 
-        // Set the checkbox
-        this.voiceResponsesToggle.checked = voiceResponsesEnabled;
-
-        // Save to localStorage if this is first time
         if (storedVoiceResponses === null) {
             localStorage.setItem('voiceResponsesEnabled', 'true');
         }
 
-        // Load voice settings
         const storedRate = localStorage.getItem('speechRate');
-        if (storedRate !== null) {
-            this.speechRate = parseFloat(storedRate);
-            this.speechRateSlider.value = storedRate;
+        if (storedRate && this.speechRateInput && this.speechRateSlider) {
+            this.speechRate = Math.max(0.5, Math.min(5, parseFloat(storedRate)));
             this.speechRateInput.value = this.speechRate.toFixed(1);
+            this.speechRateSlider.value = this.speechRate.toString();
         }
 
-        // Load selected voice (will be applied after voices load)
-        this.selectedVoice = localStorage.getItem('selectedVoice') || 'system';
-
-        // Load selected language
-        const savedLanguage = localStorage.getItem('selectedLanguage');
-        if (savedLanguage && this.languageSelect) {
-            this.languageSelect.value = savedLanguage;
+        const storedLanguage = localStorage.getItem('selectedLanguage');
+        if (storedLanguage && this.languageSelect) {
+            this.languageSelect.value = storedLanguage;
         }
 
-        // Load send mode preferences
-        const savedSendMode = localStorage.getItem('sendMode');
-        if (savedSendMode === 'wait') {
-            this.sendMode = 'wait';
-            this.sendModeWait.checked = true;
-        } else {
-            this.sendMode = 'automatic';
-            this.sendModeAutomatic.checked = true;
+        const storedVoice = localStorage.getItem('selectedVoice');
+        if (storedVoice) {
+            this.selectedVoice = storedVoice;
         }
 
-        // Load trigger word
-        const savedTriggerWord = localStorage.getItem('triggerWord');
-        if (savedTriggerWord) {
-            this.triggerWord = savedTriggerWord;
-            this.triggerWordInput.value = savedTriggerWord;
-        }
-
-        // Update UI visibility
         this.updateVoiceOptionsVisibility();
-        this.updateSendModeUI();
-
-        // Send preferences to server
         this.updateVoicePreferences();
-
-        // Update warnings after preferences are loaded
-        this.updateVoiceWarnings();
     }
 
     updateVoiceOptionsVisibility() {
-        const voiceResponsesEnabled = this.voiceResponsesToggle.checked;
-        this.voiceOptions.style.display = voiceResponsesEnabled ? 'flex' : 'none';
+        if (!this.voiceOptions || !this.voiceResponsesToggle) {
+            return;
+        }
+
+        this.voiceOptions.style.display = this.voiceResponsesToggle.checked ? 'flex' : 'none';
     }
 
     async updateVoicePreferences() {
-        const voiceResponsesEnabled = this.voiceResponsesToggle.checked;
+        if (!this.voiceResponsesToggle) {
+            return;
+        }
 
         try {
-            // Send preferences to server
             await fetch(`${this.baseUrl}/api/voice-preferences`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    voiceResponsesEnabled
+                    voiceResponsesEnabled: this.voiceResponsesToggle.checked,
                 }),
             });
-
-            this.debugLog('Voice preferences updated:', { voiceResponsesEnabled });
         } catch (error) {
-            console.error('Failed to update voice preferences:', error);
+            this.debugLog('Failed to update voice preferences', error);
         }
     }
 
     async updateVoiceInputState(active) {
         try {
-            // Send voice input state to server
             await fetch(`${this.baseUrl}/api/voice-input-state`, {
                 method: 'POST',
                 headers: {
@@ -815,206 +1143,197 @@ class VoiceHooksClient {
                 },
                 body: JSON.stringify({ active }),
             });
-
-            this.debugLog('Voice input state updated:', { active });
         } catch (error) {
-            console.error('Failed to update voice input state:', error);
+            this.debugLog('Failed to update voice input state', error);
         }
     }
 
     async syncStateWithServer() {
-        this.debugLog('Syncing state with server after reconnection');
-
-        // Sync voice response preferences
         await this.updateVoicePreferences();
 
-        // Sync voice input state if currently listening
         if (this.isListening) {
             await this.updateVoiceInputState(true);
         }
     }
 
-    updateVoiceWarnings() {
-        // Show/hide warnings based on selected voice
-        if (this.selectedVoice === 'system') {
-            // Show system voice info for Mac System Voice
-            this.systemVoiceInfo.style.display = 'flex';
-            this.rateWarning.style.display = 'none';
-        } else if (this.selectedVoice && this.selectedVoice.startsWith('browser:')) {
-            // Check voice properties
-            const voiceIndex = parseInt(this.selectedVoice.substring(8));
-            const voice = this.voices[voiceIndex];
+    enqueueSpeech(text, options = {}) {
+        const { interrupt = false, force = false } = options;
 
-            if (voice) {
-                const isGoogleVoice = voice.name.toLowerCase().includes('google');
-                const isLocalVoice = voice.localService === true;
-
-                // Show appropriate warnings
-                if (isGoogleVoice) {
-                    // Show rate warning for Google voices
-                    this.rateWarning.style.display = 'flex';
-                } else {
-                    this.rateWarning.style.display = 'none';
-                }
-
-                if (isLocalVoice) {
-                    // Show system info for local browser voices
-                    this.systemVoiceInfo.style.display = 'flex';
-                } else {
-                    this.systemVoiceInfo.style.display = 'none';
-                }
-            } else {
-                // Hide both warnings if voice not found
-                this.rateWarning.style.display = 'none';
-                this.systemVoiceInfo.style.display = 'none';
-            }
-        } else {
-            // Hide both warnings if no voice selected
-            this.rateWarning.style.display = 'none';
-            this.systemVoiceInfo.style.display = 'none';
-        }
-    }
-
-    handleWaitStatus(isWaiting) {
-        const listeningIndicatorText = this.listeningIndicator.querySelector('span');
-
-        if (isWaiting) {
-            this.listeningIndicator.classList.add('waiting-mode');
-            // Gemini is waiting for voice input
-            listeningIndicatorText.textContent = 'Gemini is paused and waiting for voice input';
-            this.debugLog('Gemini is waiting for voice input');
-
-            // Set input placeholder
-            this.interimText.textContent = 'Listening for your response...';
-        } else {
-            this.listeningIndicator.classList.remove('waiting-mode');
-            // Back to normal listening state
-            listeningIndicatorText.textContent = 'Listening...';
-            this.debugLog('Gemini finished waiting');
-        }
-    }
-
-    queueUtterance(text) {
-        const trimmedText = text.trim();
-        if (!trimmedText) return;
-
-        // Check for trigger word (case-insensitive)
-        const hasTriggerWord = this.triggerWord &&
-            trimmedText.toLowerCase().includes(this.triggerWord.toLowerCase());
-
-        if (hasTriggerWord) {
-            // Remove the trigger word from the text
-            const regex = new RegExp(`\\b${this.triggerWord}\\b`, 'gi');
-            const cleanedText = trimmedText.replace(regex, '').trim();
-
-            // Add the cleaned text to the queue if it's not empty
-            if (cleanedText) {
-                this.utteranceQueue.push(cleanedText);
-            }
-
-            this.debugLog('Trigger word detected, sending queued utterances');
-            this.sendQueuedUtterances();
-        } else {
-            // Just queue it
-            this.utteranceQueue.push(trimmedText);
-            this.updateQueuedUtterancesUI();
-            this.debugLog('Queued utterance:', trimmedText);
-        }
-    }
-
-    deleteQueuedUtterance(index) {
-        this.utteranceQueue.splice(index, 1);
-        this.updateQueuedUtterancesUI();
-    }
-
-    async sendQueuedUtterances() {
-        if (this.utteranceQueue.length === 0) {
-            this.debugLog('No utterances to send');
+        if (!text || !text.trim()) {
             return;
         }
 
-        // Combine all queued utterances into one message
-        const combinedText = this.utteranceQueue.join(' ');
+        if (!force && this.voiceResponsesToggle && !this.voiceResponsesToggle.checked) {
+            return;
+        }
 
-        this.debugLog('Sending queued utterances:', combinedText);
+        const sanitized = this.sanitizeSpeechText(text);
+        const chunks = this.splitSpeechChunks(sanitized, 220);
+        if (chunks.length === 0) {
+            return;
+        }
 
-        try {
-            const response = await fetch(`${this.baseUrl}/api/potential-utterances`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    text: combinedText,
-                    timestamp: new Date().toISOString()
-                }),
-            });
+        if (interrupt) {
+            this.ttsQueue = [];
+            this.cancelCurrentSpeech();
+        }
 
-            if (response.ok) {
-                // Clear the queue after successful send
-                this.utteranceQueue = [];
-                this.updateQueuedUtterancesUI();
-                this.loadData(); // Refresh the list
-            } else {
-                const error = await response.json();
-                console.error('Error sending queued utterances:', error);
+        if (this.isListening && !this.capturePausedForSpeech) {
+            this.capturePausedForSpeech = true;
+            if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                this.discardNextSegment = true;
+                this.mediaRecorder.stop();
             }
-        } catch (error) {
-            console.error('Failed to send queued utterances:', error);
+        }
+
+        this.ttsQueue.push(...chunks);
+
+        if (!this.isSpeaking) {
+            this.processSpeechQueue();
         }
     }
 
-    updateSendModeUI() {
-        if (this.sendMode === 'wait') {
-            // Show trigger word controls and queued utterances section
-            this.triggerWordControls.style.display = 'block';
-            this.queuedUtterancesSection.style.display = 'block';
-        } else {
-            // Hide trigger word controls and queued utterances section
-            this.triggerWordControls.style.display = 'none';
-            this.queuedUtterancesSection.style.display = 'none';
+    cancelCurrentSpeech() {
+        if (window.speechSynthesis) {
+            window.speechSynthesis.cancel();
+        }
+        this.isSpeaking = false;
+    }
 
-            // Clear queue when switching to automatic mode
-            if (this.utteranceQueue.length > 0) {
-                // Ask if user wants to send queued utterances before switching
-                if (confirm('You have queued utterances. Send them before switching to automatic mode?')) {
-                    this.sendQueuedUtterances();
+    async processSpeechQueue() {
+        if (this.isSpeaking) {
+            return;
+        }
+
+        while (this.ttsQueue.length > 0) {
+            const chunk = this.ttsQueue.shift();
+            this.isSpeaking = true;
+
+            try {
+                if (this.selectedVoice === 'system') {
+                    await this.speakSystemChunk(chunk);
                 } else {
-                    this.utteranceQueue = [];
+                    await this.speakBrowserChunk(chunk);
+                }
+            } catch (error) {
+                this.debugLog('Speech playback failed', error);
+            }
+
+            this.isSpeaking = false;
+        }
+
+        if (this.capturePausedForSpeech && this.isListening && !this.isTranscribing) {
+            this.capturePausedForSpeech = false;
+            this.startRecordingSegment();
+        } else if (!this.isListening) {
+            this.capturePausedForSpeech = false;
+        }
+    }
+
+    async speakSystemChunk(text) {
+        const response = await fetch(`${this.baseUrl}/api/speak-system`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                text,
+                rate: Math.round(this.speechRate * 150),
+            }),
+        });
+
+        if (!response.ok) {
+            const payload = await response.json().catch(() => ({}));
+            throw new Error(payload.error || 'System voice failed');
+        }
+    }
+
+    speakBrowserChunk(text) {
+        return new Promise((resolve) => {
+            if (!window.speechSynthesis) {
+                resolve();
+                return;
+            }
+
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = this.speechRate;
+            utterance.pitch = this.speechPitch;
+
+            if (this.selectedVoice && this.selectedVoice.startsWith('browser:')) {
+                const index = parseInt(this.selectedVoice.substring(8), 10);
+                if (this.voices[index]) {
+                    utterance.voice = this.voices[index];
                 }
             }
-        }
-        this.updateQueuedUtterancesUI();
+
+            utterance.onend = () => resolve();
+            utterance.onerror = () => resolve();
+            window.speechSynthesis.speak(utterance);
+        });
     }
 
-    updateQueuedUtterancesUI() {
-        this.queuedCount.textContent = this.utteranceQueue.length;
+    sanitizeSpeechText(text) {
+        let cleaned = String(text);
 
-        if (this.utteranceQueue.length === 0) {
-            this.queuedUtterancesList.innerHTML = '<div style="color: #999; font-style: italic; font-size: 13px;">No messages queued</div>';
-        } else {
-            this.queuedUtterancesList.innerHTML = this.utteranceQueue
-                .map((utterance, index) => `
-                    <div style="padding: 6px 0; border-bottom: 1px solid #ddd; font-size: 13px; display: flex; justify-content: space-between; align-items: center;">
-                        <span>${index + 1}. ${this.escapeHtml(utterance)}</span>
-                        <button class="delete-queue-btn" data-index="${index}" style="background: none; border: none; color: #DC3545; cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 4px;">&times;</button>
-                    </div>
-                `)
-                .join('');
+        cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
+        cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
+        cleaned = cleaned.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+        cleaned = cleaned.replace(/^\s*[#>*-]+\s*/gm, '');
+        cleaned = cleaned.replace(/\s+/g, ' ').trim();
 
-            // Add event listeners for delete buttons
-            const deleteButtons = this.queuedUtterancesList.querySelectorAll('.delete-queue-btn');
-            deleteButtons.forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const index = parseInt(e.target.dataset.index);
-                    this.deleteQueuedUtterance(index);
-                });
-            });
+        return cleaned;
+    }
+
+    splitSpeechChunks(text, maxLength) {
+        if (!text) {
+            return [];
+        }
+
+        const sentences = text.match(/[^.!?]+[.!?]?/g) || [text];
+        const chunks = [];
+        let current = '';
+
+        sentences.forEach((sentence) => {
+            if (!sentence) {
+                return;
+            }
+
+            if ((current + ' ' + sentence).trim().length <= maxLength) {
+                current = `${current} ${sentence}`.trim();
+                return;
+            }
+
+            if (current) {
+                chunks.push(current);
+            }
+
+            if (sentence.length <= maxLength) {
+                current = sentence;
+                return;
+            }
+
+            let remaining = sentence;
+            while (remaining.length > maxLength) {
+                chunks.push(remaining.slice(0, maxLength));
+                remaining = remaining.slice(maxLength).trim();
+            }
+            current = remaining;
+        });
+
+        if (current) {
+            chunks.push(current);
+        }
+
+        return chunks;
+    }
+
+    debugLog(...args) {
+        if (this.debug) {
+            console.log(...args);
         }
     }
 }
 
-// Initialize the client when the page loads
 document.addEventListener('DOMContentLoaded', () => {
     new VoiceHooksClient();
 });

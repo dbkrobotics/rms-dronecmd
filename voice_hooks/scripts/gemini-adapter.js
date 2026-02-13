@@ -140,7 +140,7 @@ function handleEvent(event, payload) {
         let textToSpeak = "";
 
         if (payload.prompt_response) {
-            textToSpeak = payload.prompt_response;
+            textToSpeak = sanitizeForSpeech(payload.prompt_response);
         }
 
         if (textToSpeak) {
@@ -158,6 +158,26 @@ function handleEvent(event, payload) {
         log(`Ignoring unknown event: ${event}`);
         console.log('{}');
     }
+}
+
+function sanitizeForSpeech(text) {
+    if (!text || typeof text !== 'string') {
+        return '';
+    }
+
+    let cleaned = text;
+    cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
+    cleaned = cleaned.replace(/`([^`]+)`/g, '$1');
+    cleaned = cleaned.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1');
+    cleaned = cleaned.replace(/^\s*[#>*-]+\s*/gm, '');
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+    // Keep speech concise so TTS stays natural and responsive.
+    if (cleaned.length > 700) {
+        cleaned = `${cleaned.slice(0, 700).trim()} ...`; 
+    }
+
+    return cleaned;
 }
 
 function callApi(path, body, callback) {
