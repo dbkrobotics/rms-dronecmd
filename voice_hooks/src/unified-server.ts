@@ -195,7 +195,7 @@ app.post('/api/transcribe', upload.single('audio'), async (req: Request, res: Re
 
     // Add optional configuration
     // Default prompt with technical terms
-    const defaultPrompt = "MCP, ROS, Server, Drone, PX4, MAVROS, Landing, Arming, Go, Move, meter, Go to, Move to, Square, Circle, Radius, Pattern, Altitude, Lauch, Point, Hovering";
+    const defaultPrompt = "MCP, ROS, Server, Drone, PX4, MAVROS, Landing, Arming, Go, Move, meter, Go to, Move to, Square, Circle, Radius, Pattern, Altitude, Lauch, Point, Hovering, Take off, Take off to, Drone";
     const prompt = defaultPrompt; // Always use the fixed prompt
 
     transcriptionConfig.prompt = prompt;

@@ -393,7 +393,7 @@ class VoiceHooksClient {
 
     async deleteUtterance(id) {
         try {
-            const response = await fetch(`${ this.baseUrl } / api / utterances / ${ id }`, {
+            const response = await fetch(`${this.baseUrl}/api/utterances/${id}`, {
                 method: 'DELETE',
             });
 
@@ -995,7 +995,7 @@ class VoiceHooksClient {
         } else {
             this.queuedUtterancesList.innerHTML = this.utteranceQueue
                 .map((utterance, index) => `
-        < div style = "padding: 6px 0; border-bottom: 1px solid #ddd; font-size: 13px; display: flex; justify-content: space-between; align-items: center;" >
+                    <div style="padding: 6px 0; border-bottom: 1px solid #ddd; font-size: 13px; display: flex; justify-content: space-between; align-items: center;">
                         <span>${index + 1}. ${this.escapeHtml(utterance)}</span>
                         <button class="delete-queue-btn" data-index="${index}" style="background: none; border: none; color: #DC3545; cursor: pointer; font-size: 18px; font-weight: bold; padding: 0 4px;">&times;</button>
                     </div>
