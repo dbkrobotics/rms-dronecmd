@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Drone Voice ADK Agent</title>
+    <style>
+      :root {
+        --bg: #0f141b;
+        --panel: #151d27;
+        --panel-soft: #1d2734;
+        --text: #e6edf7;
+        --muted: #9fb1c7;
+        --ok: #37d67a;
+        --warn: #ffb84d;
+        --danger: #ff5f6d;
+        --accent: #43a9ff;
+        --border: #2a394b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Pretendard", "Noto Sans KR", system-ui, sans-serif;
+        background: radial-gradient(circle at 20% 0%, #1d2734 0%, var(--bg) 55%);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+        display: grid;
+        gap: 16px;
+      }
+
+      .panel {
+        background: linear-gradient(180deg, var(--panel), var(--panel-soft));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 24px;
+      }
+
+      .subtitle {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .grid {
+        display: grid;
+        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+
+      button {
+        border: 1px solid var(--border);
+        background: #223041;
+        color: var(--text);
+        padding: 9px 12px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+
+      button.primary {
+        background: #1f4f7a;
+        border-color: #2f6ca0;
+      }
+
+      button.warn {
+        background: #5b3c15;
+        border-color: #956423;
+      }
+
+      button.danger {
+        background: #5a1e26;
+        border-color: #8f2f3b;
+      }
+
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .status {
+        font-weight: 700;
+      }
+
+      .status.ok {
+        color: var(--ok);
+      }
+
+      .status.warn {
+        color: var(--warn);
+      }
+
+      .status.danger {
+        color: var(--danger);
+      }
+
+      input[type="text"] {
+        width: 100%;
+        border: 1px solid var(--border);
+        background: #0f1620;
+        color: var(--text);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 15px;
+      }
+
+      .transcript-box {
+        min-height: 84px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        background: #0f1620;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .transcript-box .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      #log {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        max-height: 280px;
+        overflow: auto;
+        display: grid;
+        gap: 6px;
+      }
+
+      #log li {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px;
+        background: #101925;
+        font-size: 13px;
+        color: #cdd8e7;
+        word-break: break-word;
+      }
+
+      #log li .time {
+        color: var(--muted);
+        margin-right: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="panel">
+        <h1>Drone Voice ADK Agent</h1>
+        <p class="subtitle">
+          사람 ↔ 실시간 Voice Agent ↔ ROS MCP Server 직접 연동 (voice_hooks와 독립, confirm 기반 실행)
+        </p>
+      </section>
+
+      <section class="panel row">
+        <div>
+          연결 상태: <span id="connectionStatus" class="status warn">DISCONNECTED</span>
+        </div>
+        <button id="connectBtn" class="primary">Connect</button>
+        <button id="disconnectBtn" class="danger" disabled>Disconnect</button>
+      </section>
+
+      <section class="panel row">
+        <button id="startMicBtn" class="primary" disabled>Start Mic</button>
+        <button id="stopMicBtn" class="warn" disabled>Stop Mic</button>
+        <button id="clearAudioBtn" disabled>Clear Playback Queue</button>
+      </section>
+
+      <section class="panel">
+        <div class="row">
+          <input id="textInput" type="text" placeholder="텍스트 명령 입력 (예: takeoff to 2 meters) → 이후 confirm 필요" disabled />
+          <button id="sendTextBtn" class="primary" disabled>Send</button>
+        </div>
+      </section>
+
+      <section class="grid">
+        <section class="panel">
+          <div class="transcript-box">
+            <div class="label">Input Transcript</div>
+            <div id="inputTranscript">(no input yet)</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="transcript-box">
+            <div class="label">Assistant Transcript</div>
+            <div id="outputTranscript">(no output yet)</div>
+          </div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="label">Event Log</div>
+        <ul id="log"></ul>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -10,6 +10,8 @@ It is structured as a standalone example that can be merged into `robotmcp/ros-m
   - `gazebo_sim`: Simulation setup and workspace (including `drone_interfaces` and `drone_controller`).
   - `real_robot`: Placeholder for real robot setup.
   - `images`: Screenshots and diagrams.
+- `voice_hooks/`: Existing hook-based voice integration (kept as-is).
+- `voice_adk_agent/`: New independent real-time voice agent based on Google ADK + direct ROS MCP tool connection.
 
 ## Usage
 
