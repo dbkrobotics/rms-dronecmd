@@ -17,6 +17,11 @@ let captureSourceNode = null;
 let captureWorkletNode = null;
 let captureMuteNode = null;
 let micActive = false;
+let shouldResumeMicAfterReconnect = false;
+let manualDisconnect = false;
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+const MAX_RECONNECT_ATTEMPTS = 3;
 
 let playbackContext = null;
 let nextPlaybackTime = 0;
@@ -122,7 +127,7 @@ async function queuePcmForPlayback(arrayBuffer) {
 }
 
 async function connectWebSocket() {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
 
@@ -133,17 +138,40 @@ async function connectWebSocket() {
   updateControlState();
 
   ws.onopen = () => {
+    reconnectAttempts = 0;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
     setStatus("CONNECTED", "ok");
     appendLog("WebSocket connected");
     updateControlState();
+    if (shouldResumeMicAfterReconnect) {
+      shouldResumeMicAfterReconnect = false;
+      startMicrophone().catch((error) => {
+        appendLog(`Mic resume failed: ${error}`);
+      });
+    }
   };
 
   ws.onclose = () => {
     setStatus("DISCONNECTED", "danger");
     appendLog("WebSocket disconnected");
+    shouldResumeMicAfterReconnect = micActive;
     ws = null;
     stopMicrophone().catch(() => {});
     updateControlState();
+
+    if (!manualDisconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts += 1;
+      const delayMs = Math.min(3000, 700 * reconnectAttempts);
+      appendLog(`Auto reconnect in ${delayMs}ms (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+      reconnectTimer = setTimeout(() => {
+        connectWebSocket().catch((error) => {
+          appendLog(`Reconnect failed: ${error}`);
+        });
+      }, delayMs);
+    }
   };
 
   ws.onerror = () => {
@@ -163,6 +191,12 @@ async function connectWebSocket() {
 }
 
 function disconnectWebSocket() {
+  manualDisconnect = true;
+  shouldResumeMicAfterReconnect = false;
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (!ws) {
     return;
   }
@@ -353,6 +387,7 @@ function sendTextMessage() {
 }
 
 connectBtn.addEventListener("click", () => {
+  manualDisconnect = false;
   connectWebSocket().catch((error) => {
     appendLog(`Connect failed: ${error}`);
   });

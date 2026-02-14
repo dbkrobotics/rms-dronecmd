@@ -82,6 +82,7 @@ After startup, use the printed `ngrok public URL` on your phone browser.
 - The guardrail currently blocks immediate duplicate commands within `VOICE_AGENT_DUPLICATE_WINDOW_SEC`.
 - Execution safety: commands are queued and require explicit `confirm`.
 - Confirmation approval is one-time and expires by `VOICE_AGENT_APPROVAL_TIMEOUT_SEC`.
+- Read-only status queries (position/altitude/battery/state) run without confirmation using ROS MCP read tools.
 - Tool observability: terminal now prints `TOOL_CALL` / `TOOL_RESULT` traces, and the web UI event log shows the same.
 - If needed, inspect low-level ROS MCP stderr in `/tmp/ros_mcp_server_stderr.log`.
 - Optional retry for transient live model drops is controlled by `VOICE_AGENT_LIVE_RETRY_COUNT` (default: `2`).

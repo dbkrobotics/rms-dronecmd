@@ -62,6 +62,12 @@ ACTION_PATTERNS = [
     r"\bcircle\b",
     r"\bsquare\b",
 ]
+STATUS_QUERY_PATTERNS = [
+    r"\b(current|latest|now)\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
+    r"\b(where|what)\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
+    r"\btell me\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
+    r"\bdrone\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
+]
 
 EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more"]
 NON_COMMAND_EXACT_PHRASES = {
@@ -113,7 +119,7 @@ def _env_float(name: str, default: float, minimum: float) -> float:
 
 
 def _context_key(tool_context: ToolContext) -> str:
-    for attr in ("session_id", "user_id", "invocation_id"):
+    for attr in ("user_id", "session_id", "invocation_id"):
         value = getattr(tool_context, attr, None)
         if value:
             return f"{attr}:{value}"
@@ -122,7 +128,7 @@ def _context_key(tool_context: ToolContext) -> str:
         tool_context, "_invocation_context", None
     )
     if nested is not None:
-        for attr in ("session_id", "user_id", "id"):
+        for attr in ("user_id", "session_id", "id"):
             value = getattr(nested, attr, None)
             if value:
                 return f"nested-{attr}:{value}"
@@ -248,6 +254,10 @@ def _contains_action(normalized_text: str) -> bool:
     return any(re.search(pattern, normalized_text) for pattern in ACTION_PATTERNS)
 
 
+def _contains_status_query(normalized_text: str) -> bool:
+    return any(re.search(pattern, normalized_text) for pattern in STATUS_QUERY_PATTERNS)
+
+
 def _is_non_command_chatter(normalized_text: str) -> bool:
     if normalized_text in NON_COMMAND_EXACT_PHRASES:
         return True
@@ -265,7 +275,6 @@ def _is_cancel_phrase(raw_text: str) -> bool:
 
 
 def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str, Any]:
-    """Stages every spoken command first and requires explicit confirmation before execution."""
 
     raw_text = (command or "").strip()
     normalized = _normalize_text(raw_text)
@@ -400,6 +409,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
         }
 
     has_action = _contains_action(normalized)
+    has_status_query = _contains_status_query(normalized)
     if _is_non_command_chatter(normalized):
         if pending_command:
             return {
@@ -424,6 +434,19 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
             "confidence": 0.0,
             "confirmation_required": False,
             "reason": "Ignored non-command speech.",
+        }
+
+    if not has_action and has_status_query:
+        return {
+            "decision": "execute_readonly_query",
+            "command_to_execute": normalized,
+            "pending_command": pending_command,
+            "normalized_command": normalized,
+            "actionable": True,
+            "duplicate": False,
+            "confidence": 0.7,
+            "confirmation_required": False,
+            "reason": "Read-only status query detected. Execute ROS MCP read tools without confirmation.",
         }
 
     if not has_action:
@@ -592,15 +615,18 @@ Always follow this exact workflow for every user turn:
 3. If `decision` is `needs_confirmation`, do not call ROS tools. Tell the user which command is staged and ask them to say `confirm`.
 4. If `decision` is `duplicate_blocked`, do not call ROS tools. Ask the user to update the command or say `confirm`.
 5. If `decision` is `cancelled`, acknowledge cancellation and wait for a new command.
-6. If `decision` is `execute_pending`, execute only `command_to_execute` via ROS MCP tools.
-7. Never execute ROS tools unless `decision` is `execute_pending`.
-8. After tool execution, summarize what was executed and current status in <= 2 short sentences.
+6. If `decision` is `execute_readonly_query`, run only read tools to answer the query (never movement/action tools).
+7. If `decision` is `execute_pending`, execute only `command_to_execute` via ROS MCP tools.
+8. Never execute movement tools unless `decision` is `execute_pending`.
+9. After tool execution, summarize what was executed and current status in <= 2 short sentences.
 
 Safety and UX rules:
 - Ignore filler words, stutters, and non-command chatter.
 - Always stage first, then require explicit confirmation.
 - Treat confirmation approval as one-time and time-limited.
 - Prefer high-level safe commands (takeoff, land, hover, rtl, move with distance/altitude).
+- For current-status questions (position, altitude, battery, pose, state), do not ask for confirm. Use read-only tools like `get_topics`, `get_topic_type`, and `subscribe_once`.
+- For position queries on PX4, prioritize these topics in order: `/mavros/local_position/pose`, `/mavros/global_position/local`, `/mavros/global_position/global`, then similar available pose/odom topics.
 - For known PX4 actions from loaded spec, avoid extra introspection calls (for example `get_action_details`) unless a tool call fails.
 - For ROS action execution calls, always set an explicit timeout (at least 60 seconds).
 - If critical details are missing (for example altitude for takeoff), ask a brief follow-up.

@@ -415,19 +415,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
 
     user_id = f"user-{uuid4().hex}"
-    session_id = f"session-{uuid4().hex}"
+    session_ref: dict[str, str] = {"value": f"session-{uuid4().hex}"}
 
     await session_service.create_session(
         app_name=APP_NAME,
         user_id=user_id,
-        session_id=session_id,
+        session_id=session_ref["value"],
         state={},
     )
 
     await websocket.send_json(
         {
             "type": "session_started",
-            "session_id": session_id,
+            "session_id": session_ref["value"],
             "user_id": user_id,
         }
     )
@@ -435,7 +435,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     queue_ref: dict[str, LiveRequestQueue] = {"value": LiveRequestQueue()}
     seen_tool_signatures: set[str] = set()
 
-    logger.info("Live session started: session_id=%s user_id=%s trace_tools=%s", session_id, user_id, TRACE_TOOLS)
+    logger.info(
+        "Live session started: session_id=%s user_id=%s trace_tools=%s",
+        session_ref["value"],
+        user_id,
+        TRACE_TOOLS,
+    )
 
     async def upstream() -> None:
         try:
@@ -458,7 +463,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await _handle_text_message(text_message, queue_ref["value"])
 
         except WebSocketDisconnect:
-            logger.info("Client disconnected: %s", session_id)
+            logger.info("Client disconnected: %s", session_ref["value"])
         finally:
             queue_ref["value"].close()
 
@@ -470,7 +475,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 run_config = _build_run_config()
                 async for event in runner.run_live(
                     user_id=user_id,
-                    session_id=session_id,
+                    session_id=session_ref["value"],
                     live_request_queue=active_queue,
                     run_config=run_config,
                 ):
@@ -492,17 +497,35 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 previous_queue = queue_ref["value"]
                 queue_ref["value"] = LiveRequestQueue()
                 previous_queue.close()
+                previous_session = session_ref["value"]
+                session_ref["value"] = f"session-{uuid4().hex}"
+                await session_service.create_session(
+                    app_name=APP_NAME,
+                    user_id=user_id,
+                    session_id=session_ref["value"],
+                    state={},
+                )
+                seen_tool_signatures.clear()
                 logger.warning(
-                    "Live model stream failed (%s). Retrying %d/%d in %.1fs",
+                    "Live model stream failed (%s). Retrying %d/%d in %.1fs with new session %s (prev=%s)",
                     exc,
                     attempt,
                     LIVE_RETRY_COUNT,
                     delay,
+                    session_ref["value"],
+                    previous_session,
                 )
                 await websocket.send_json(
                     {
                         "type": "error",
                         "detail": f"Live model connection dropped. Retrying ({attempt}/{LIVE_RETRY_COUNT})...",
+                    }
+                )
+                await websocket.send_json(
+                    {
+                        "type": "session_started",
+                        "session_id": session_ref["value"],
+                        "user_id": user_id,
                     }
                 )
                 await asyncio.sleep(delay)
