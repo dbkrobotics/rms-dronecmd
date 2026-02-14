@@ -21,8 +21,6 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from app.drone_voice_agent import root_agent
-
 load_dotenv()
 
 # ADK currently emits a noisy pydantic serializer warning for response_modalities
@@ -32,6 +30,18 @@ warnings.filterwarnings(
     message=r".*response_modalities.*",
     category=UserWarning,
 )
+warnings.filterwarnings(
+    "ignore",
+    message=r"^Pydantic serializer warnings:.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r".*\[EXPERIMENTAL\].*BASE_AUTHENTICATED_TOOL.*",
+    category=UserWarning,
+)
+
+from app.drone_voice_agent import root_agent
 
 logger = logging.getLogger("voice_adk_agent")
 logging.basicConfig(level=os.getenv("VOICE_AGENT_LOG_LEVEL", "INFO"))
@@ -50,6 +60,8 @@ APP_NAME = os.getenv("VOICE_AGENT_APP_NAME", "drone_voice_agent_app")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 TRACE_TOOLS = os.getenv("VOICE_AGENT_TRACE_TOOLS", "true").lower() not in {"0", "false", "no"}
 TOOL_LOG_MAX_CHARS = int(os.getenv("VOICE_AGENT_TOOL_LOG_MAX_CHARS", "900"))
+LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "1"))
+LIVE_RETRY_BACKOFF_SEC = float(os.getenv("VOICE_AGENT_LIVE_RETRY_BACKOFF_SEC", "1.0"))
 
 session_service = InMemorySessionService()
 runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
@@ -216,6 +228,21 @@ def _extract_tool_activity_from_part(part: Any) -> list[dict[str, Any]]:
         activities.append({"kind": "tool_result", "name": str(name), "payload": payload})
 
     return activities
+
+
+def _is_retryable_live_error(exception: Exception) -> bool:
+    status_code = getattr(exception, "status_code", None)
+    if isinstance(status_code, int) and status_code in {1011, 429, 500, 502, 503, 504}:
+        return True
+
+    text = str(exception).lower()
+    return (
+        "1011" in text
+        or "internal error occurred" in text
+        or "connection closed" in text
+        or "temporarily unavailable" in text
+        or "timeout" in text
+    )
 
 
 def _scan_tool_activity(obj: Any, collected: list[dict[str, Any]]) -> None:
@@ -428,13 +455,37 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             live_request_queue.close()
 
     async def downstream() -> None:
-        async for event in runner.run_live(
-            user_id=user_id,
-            session_id=session_id,
-            live_request_queue=live_request_queue,
-            run_config=run_config,
-        ):
-            await _forward_event(websocket, event, seen_tool_signatures)
+        attempt = 0
+        while True:
+            try:
+                async for event in runner.run_live(
+                    user_id=user_id,
+                    session_id=session_id,
+                    live_request_queue=live_request_queue,
+                    run_config=run_config,
+                ):
+                    await _forward_event(websocket, event, seen_tool_signatures)
+                return
+            except Exception as exc:
+                if attempt >= LIVE_RETRY_COUNT or not _is_retryable_live_error(exc):
+                    raise
+
+                attempt += 1
+                delay = LIVE_RETRY_BACKOFF_SEC * attempt
+                logger.warning(
+                    "Live model stream failed (%s). Retrying %d/%d in %.1fs",
+                    exc,
+                    attempt,
+                    LIVE_RETRY_COUNT,
+                    delay,
+                )
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "detail": f"Live model connection dropped. Retrying ({attempt}/{LIVE_RETRY_COUNT})...",
+                    }
+                )
+                await asyncio.sleep(delay)
 
     upstream_task = asyncio.create_task(upstream())
     downstream_task = asyncio.create_task(downstream())

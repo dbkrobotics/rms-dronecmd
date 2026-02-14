@@ -59,6 +59,24 @@ ACTION_PATTERNS = [
 ]
 
 EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more"]
+NON_COMMAND_EXACT_PHRASES = {
+    "command staged",
+    "staged command",
+    "i m sorry",
+    "sorry",
+    "okay",
+    "ok",
+    "thanks",
+    "thank you",
+}
+NON_COMMAND_PATTERNS = [
+    r"\bask user to say confirm\b",
+    r"\bdo not execute yet\b",
+    r"\bconfirmation accepted\b",
+    r"\bno staged command\b",
+    r"\bstaged command was cancelled\b",
+    r"\bwaiting for\b.*\bconfirm\b",
+]
 CONFIRM_PHRASES = {
     "confirm",
     "confirm it",
@@ -141,6 +159,12 @@ def _clear_pending_command(state: Any) -> None:
 
 def _contains_action(normalized_text: str) -> bool:
     return any(re.search(pattern, normalized_text) for pattern in ACTION_PATTERNS)
+
+
+def _is_non_command_chatter(normalized_text: str) -> bool:
+    if normalized_text in NON_COMMAND_EXACT_PHRASES:
+        return True
+    return any(re.search(pattern, normalized_text) for pattern in NON_COMMAND_PATTERNS)
 
 
 def _is_confirm_phrase(raw_text: str) -> bool:
@@ -235,6 +259,59 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
             "reason": "No actionable speech detected.",
         }
 
+    has_action = _contains_action(normalized)
+    if _is_non_command_chatter(normalized):
+        if pending_command:
+            return {
+                "decision": "needs_confirmation",
+                "command_to_execute": "",
+                "pending_command": pending_command,
+                "normalized_command": normalized,
+                "actionable": False,
+                "duplicate": False,
+                "confidence": 0.0,
+                "confirmation_required": True,
+                "confirmation_phrase": "confirm",
+                "reason": "Ignored non-command speech. Still waiting for confirm or cancel.",
+            }
+        return {
+            "decision": "noop",
+            "command_to_execute": "",
+            "pending_command": "",
+            "normalized_command": normalized,
+            "actionable": False,
+            "duplicate": False,
+            "confidence": 0.0,
+            "confirmation_required": False,
+            "reason": "Ignored non-command speech.",
+        }
+
+    if not has_action:
+        if pending_command:
+            return {
+                "decision": "needs_confirmation",
+                "command_to_execute": "",
+                "pending_command": pending_command,
+                "normalized_command": normalized,
+                "actionable": False,
+                "duplicate": False,
+                "confidence": 0.4,
+                "confirmation_required": True,
+                "confirmation_phrase": "confirm",
+                "reason": "No clear drone action detected. Keep pending command and wait for confirm/cancel.",
+            }
+        return {
+            "decision": "noop",
+            "command_to_execute": "",
+            "pending_command": "",
+            "normalized_command": normalized,
+            "actionable": False,
+            "duplicate": False,
+            "confidence": 0.2,
+            "confirmation_required": False,
+            "reason": "No clear drone action detected. Say a drone command first.",
+        }
+
     last_command = str(state.get("last_normalized_command", ""))
     last_timestamp = float(state.get("last_normalized_command_ts", 0.0) or 0.0)
     explicit_repeat = any(pattern in raw_text.lower() for pattern in EXPLICIT_REPEAT_PATTERNS)
@@ -248,7 +325,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     if pending_command and normalized == pending_command:
         is_duplicate = True
 
-    confidence = 0.8 if _contains_action(normalized) else 0.6
+    confidence = 0.8 if has_action else 0.6
 
     if is_duplicate:
         return {
@@ -263,7 +340,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
             "reason": "Duplicate command detected. Waiting for an updated command or explicit confirm.",
         }
 
-    # Stage everything user said. The execution is always gated by a follow-up confirm phrase.
+    # Stage only actionable drone commands. Execution is gated by explicit confirm.
     state["pending_command"] = normalized
     state["pending_command_ts"] = now
 
@@ -394,6 +471,7 @@ Safety and UX rules:
 - Never invent ROS tool results.
 - Keep responses concise and spoken-language friendly.
 - Preserve user intent exactly; do not rewrite to a different action.
+- Never treat your own responses or status text as user commands.
 - Reply in English only.
 """.strip()
 

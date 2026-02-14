@@ -21,6 +21,7 @@ let micActive = false;
 let playbackContext = null;
 let nextPlaybackTime = 0;
 const activePlaybackSources = new Set();
+let suppressMicUntilMs = 0;
 
 function setStatus(text, level) {
   connectionStatus.textContent = text;
@@ -95,6 +96,8 @@ async function queuePcmForPlayback(arrayBuffer) {
   if (int16.length === 0) {
     return;
   }
+  const chunkDurationMs = Math.round((int16.length / 24000) * 1000);
+  suppressMicUntilMs = Math.max(suppressMicUntilMs, Date.now() + chunkDurationMs + 120);
 
   const float32 = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i += 1) {
@@ -272,6 +275,9 @@ async function startMicrophone() {
 
   captureWorkletNode.port.onmessage = (event) => {
     if (!ws || ws.readyState !== WebSocket.OPEN || !micActive) {
+      return;
+    }
+    if (Date.now() < suppressMicUntilMs) {
       return;
     }
 
