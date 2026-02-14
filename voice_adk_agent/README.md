@@ -44,7 +44,7 @@ Edit `.env`:
 - Keep `ROS_MCP_SERVER_PYTHON` and `ROS_MCP_SERVER_SCRIPT` aligned with your runtime machine paths
 - Optional: set `ROS_MCP_ROBOT_SPEC_PATH` to force-load `drone_px4.yaml` context
 - Default behavior redirects noisy ROS MCP stderr logs to `/tmp/ros_mcp_server_stderr.log`
-- Optional: tune third-party SDK log verbosity with `VOICE_AGENT_THIRD_PARTY_LOG_LEVEL` (default: `WARNING`)
+- Optional: tune third-party SDK log verbosity with `VOICE_AGENT_THIRD_PARTY_LOG_LEVEL` (default: `CRITICAL`)
 
 ## Run
 
@@ -81,6 +81,7 @@ After startup, use the printed `ngrok public URL` on your phone browser.
 - If you want to run in text-only mode, set `VOICE_AGENT_RESPONSE_MODALITY=TEXT`.
 - The guardrail currently blocks immediate duplicate commands within `VOICE_AGENT_DUPLICATE_WINDOW_SEC`.
 - Execution safety: commands are queued and require explicit `confirm`.
+- Confirmation approval is one-time and expires by `VOICE_AGENT_APPROVAL_TIMEOUT_SEC`.
 - Tool observability: terminal now prints `TOOL_CALL` / `TOOL_RESULT` traces, and the web UI event log shows the same.
 - If needed, inspect low-level ROS MCP stderr in `/tmp/ros_mcp_server_stderr.log`.
 - Transient live model drops (for example websocket code `1011`) are retried automatically with `VOICE_AGENT_LIVE_RETRY_COUNT`.

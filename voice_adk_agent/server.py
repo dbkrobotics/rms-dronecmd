@@ -45,8 +45,8 @@ from app.drone_voice_agent import root_agent
 
 logger = logging.getLogger("voice_adk_agent")
 logging.basicConfig(level=os.getenv("VOICE_AGENT_LOG_LEVEL", "INFO"))
-third_party_level_name = os.getenv("VOICE_AGENT_THIRD_PARTY_LOG_LEVEL", "WARNING").upper()
-third_party_level = getattr(logging, third_party_level_name, logging.WARNING)
+third_party_level_name = os.getenv("VOICE_AGENT_THIRD_PARTY_LOG_LEVEL", "CRITICAL").upper()
+third_party_level = getattr(logging, third_party_level_name, logging.CRITICAL)
 for noisy_logger in (
     "google_adk",
     "google.adk",
@@ -423,8 +423,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         }
     )
 
-    live_request_queue = LiveRequestQueue()
-    run_config = _build_run_config()
+    queue_ref: dict[str, LiveRequestQueue] = {"value": LiveRequestQueue()}
     seen_tool_signatures: set[str] = set()
 
     logger.info("Live session started: session_id=%s user_id=%s trace_tools=%s", session_id, user_id, TRACE_TOOLS)
@@ -441,37 +440,49 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 text_message = message.get("text")
 
                 if audio_bytes is not None:
-                    live_request_queue.send_realtime(
+                    queue_ref["value"].send_realtime(
                         types.Blob(mime_type="audio/pcm;rate=16000", data=audio_bytes)
                     )
                     continue
 
                 if text_message is not None:
-                    await _handle_text_message(text_message, live_request_queue)
+                    await _handle_text_message(text_message, queue_ref["value"])
 
         except WebSocketDisconnect:
             logger.info("Client disconnected: %s", session_id)
         finally:
-            live_request_queue.close()
+            queue_ref["value"].close()
 
     async def downstream() -> None:
         attempt = 0
         while True:
             try:
+                active_queue = queue_ref["value"]
+                run_config = _build_run_config()
                 async for event in runner.run_live(
                     user_id=user_id,
                     session_id=session_id,
-                    live_request_queue=live_request_queue,
+                    live_request_queue=active_queue,
                     run_config=run_config,
                 ):
                     await _forward_event(websocket, event, seen_tool_signatures)
                 return
             except Exception as exc:
                 if attempt >= LIVE_RETRY_COUNT or not _is_retryable_live_error(exc):
+                    logger.error("Live model stream failed: %s", exc)
+                    try:
+                        await websocket.send_json(
+                            {"type": "error", "detail": f"Live model error: {exc}"}
+                        )
+                    except Exception:
+                        pass
                     raise
 
                 attempt += 1
                 delay = LIVE_RETRY_BACKOFF_SEC * attempt
+                previous_queue = queue_ref["value"]
+                queue_ref["value"] = LiveRequestQueue()
+                previous_queue.close()
                 logger.warning(
                     "Live model stream failed (%s). Retrying %d/%d in %.1fs",
                     exc,
@@ -503,7 +514,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     for task in done:
         exception = task.exception()
         if exception:
-            logger.exception("WebSocket task failed: %s", exception)
+            logger.error("WebSocket task failed: %s", exception)
 
 
 if __name__ == "__main__":
