@@ -43,6 +43,8 @@ Edit `.env`:
 - Set `GOOGLE_API_KEY`
 - Keep `ROS_MCP_SERVER_PYTHON` and `ROS_MCP_SERVER_SCRIPT` aligned with your runtime machine paths
 - Optional: set `ROS_MCP_ROBOT_SPEC_PATH` to force-load `drone_px4.yaml` context
+- Default behavior redirects noisy ROS MCP stderr logs to `/tmp/ros_mcp_server_stderr.log`
+- Optional: tune third-party SDK log verbosity with `VOICE_AGENT_THIRD_PARTY_LOG_LEVEL` (default: `WARNING`)
 
 ## Run
 
@@ -80,3 +82,4 @@ After startup, use the printed `ngrok public URL` on your phone browser.
 - The guardrail currently blocks immediate duplicate commands within `VOICE_AGENT_DUPLICATE_WINDOW_SEC`.
 - Execution safety: commands are queued and require explicit `confirm`.
 - Tool observability: terminal now prints `TOOL_CALL` / `TOOL_RESULT` traces, and the web UI event log shows the same.
+- If needed, inspect low-level ROS MCP stderr in `/tmp/ros_mcp_server_stderr.log`.

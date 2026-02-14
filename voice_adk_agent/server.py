@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -24,8 +25,26 @@ from app.drone_voice_agent import root_agent
 
 load_dotenv()
 
+# ADK currently emits a noisy pydantic serializer warning for response_modalities
+# in some versions. This does not affect runtime behavior for this app.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*response_modalities.*",
+    category=UserWarning,
+)
+
 logger = logging.getLogger("voice_adk_agent")
 logging.basicConfig(level=os.getenv("VOICE_AGENT_LOG_LEVEL", "INFO"))
+third_party_level_name = os.getenv("VOICE_AGENT_THIRD_PARTY_LOG_LEVEL", "WARNING").upper()
+third_party_level = getattr(logging, third_party_level_name, logging.WARNING)
+for noisy_logger in (
+    "google_adk",
+    "google.adk",
+    "google_genai",
+    "google.genai",
+    "google_genai.types",
+):
+    logging.getLogger(noisy_logger).setLevel(third_party_level)
 
 APP_NAME = os.getenv("VOICE_AGENT_APP_NAME", "drone_voice_agent_app")
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -132,6 +151,36 @@ def _compact(value: Any) -> str:
     return f"{text[:TOOL_LOG_MAX_CHARS]} ...<truncated>"
 
 
+def _summarize_tool_payload(kind: str, tool_name: str, payload: Any) -> Any:
+    plain_payload = _plain(payload)
+
+    if kind == "tool_call":
+        return plain_payload
+
+    if not isinstance(plain_payload, Mapping):
+        return plain_payload
+
+    if "error" in plain_payload:
+        return {"error": plain_payload.get("error")}
+
+    if "structuredContent" in plain_payload:
+        structured = plain_payload.get("structuredContent")
+        if isinstance(structured, Mapping):
+            keys = sorted(structured.keys())
+            summary: dict[str, Any] = {"keys": keys}
+            for key in ("action_count", "service_count", "topic_count", "node_count", "success", "message"):
+                if key in structured:
+                    summary[key] = structured.get(key)
+            return {"structuredContent": summary}
+        return {"structuredContent": structured}
+
+    if "content" in plain_payload and isinstance(plain_payload["content"], Sequence):
+        items = plain_payload["content"]
+        return {"content_items": len(items), "tool": tool_name}
+
+    return plain_payload
+
+
 def _extract_tool_activity_from_part(part: Any) -> list[dict[str, Any]]:
     activities: list[dict[str, Any]] = []
 
@@ -200,13 +249,14 @@ async def _emit_tool_activity(
     websocket: WebSocket, activities: list[dict[str, Any]], seen_signatures: set[str]
 ) -> None:
     for item in activities:
-        signature = f"{item['kind']}::{item['name']}::{_compact(item['payload'])}"
+        summarized_payload = _summarize_tool_payload(item["kind"], item["name"], item["payload"])
+        signature = f"{item['kind']}::{item['name']}::{_compact(summarized_payload)}"
         if signature in seen_signatures:
             continue
         seen_signatures.add(signature)
 
         if TRACE_TOOLS:
-            payload_plain = _plain(item["payload"])
+            payload_plain = _plain(summarized_payload)
             is_error_result = (
                 item["kind"] == "tool_result"
                 and isinstance(payload_plain, Mapping)
@@ -217,21 +267,21 @@ async def _emit_tool_activity(
                     "[%s] %s payload=%s",
                     item["kind"].upper(),
                     item["name"],
-                    _compact(item["payload"]),
+                    _compact(summarized_payload),
                 )
             else:
                 logger.info(
                     "[%s] %s payload=%s",
                     item["kind"].upper(),
                     item["name"],
-                    _compact(item["payload"]),
+                    _compact(summarized_payload),
                 )
 
         await websocket.send_json(
             {
                 "type": item["kind"],
                 "name": item["name"],
-                "payload": _plain(item["payload"]),
+                "payload": _plain(summarized_payload),
             }
         )
 

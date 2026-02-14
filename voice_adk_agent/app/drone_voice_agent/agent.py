@@ -35,27 +35,27 @@ FILLER_WORDS = {
 }
 
 ACTION_PATTERNS = [
-    r"\\btake\\s*off\\b",
-    r"\\bland\\b",
-    r"\\barm\\b",
-    r"\\bdisarm\\b",
-    r"\\bhover\\b",
-    r"\\breturn\\s*to\\s*launch\\b",
-    r"\\breturn\\s*home\\b",
-    r"\\brtl\\b",
-    r"\\bstop\\b",
-    r"\\bmove\\b",
-    r"\\bgo\\b",
-    r"\\bforward\\b",
-    r"\\bbackward\\b",
-    r"\\bleft\\b",
-    r"\\bright\\b",
-    r"\\bup\\b",
-    r"\\bdown\\b",
-    r"\\bturn\\b",
-    r"\\brotate\\b",
-    r"\\bcircle\\b",
-    r"\\bsquare\\b",
+    r"\btake\s*off\b",
+    r"\bland\b",
+    r"\barm\b",
+    r"\bdisarm\b",
+    r"\bhover\b",
+    r"\breturn\s*to\s*launch\b",
+    r"\breturn\s*home\b",
+    r"\brtl\b",
+    r"\bstop\b",
+    r"\bmove\b",
+    r"\bgo\b",
+    r"\bforward\b",
+    r"\bbackward\b",
+    r"\bleft\b",
+    r"\bright\b",
+    r"\bup\b",
+    r"\bdown\b",
+    r"\bturn\b",
+    r"\brotate\b",
+    r"\bcircle\b",
+    r"\bsquare\b",
 ]
 
 EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more"]
@@ -113,9 +113,9 @@ def _collapse_duplicate_bigrams(tokens: list[str]) -> list[str]:
 
 def _normalize_text(raw_text: str) -> str:
     lowered = raw_text.lower().strip()
-    lowered = re.sub(r"```[\\s\\S]*?```", " ", lowered)
-    lowered = re.sub(r"[^0-9a-zA-Z/_\\-\\.\\s]", " ", lowered)
-    lowered = re.sub(r"\\s+", " ", lowered).strip()
+    lowered = re.sub(r"```[\s\S]*?```", " ", lowered)
+    lowered = re.sub(r"[^0-9a-zA-Z/_\-\.\s]", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
 
     if not lowered:
         return ""
@@ -128,9 +128,15 @@ def _normalize_text(raw_text: str) -> str:
 
 def _normalize_phrase_for_match(text: str) -> str:
     cleaned = text.lower().strip()
-    cleaned = re.sub(r"[^0-9a-zA-Z\\s]", " ", cleaned)
-    cleaned = re.sub(r"\\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"[^0-9a-zA-Z\s]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+
+def _clear_pending_command(state: Any) -> None:
+    # ADK State is not a dict and doesn't implement pop(); overwrite keys instead.
+    state["pending_command"] = ""
+    state["pending_command_ts"] = 0.0
 
 
 def _contains_action(normalized_text: str) -> bool:
@@ -161,16 +167,14 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     pending_ts = float(state.get("pending_command_ts", 0.0) or 0.0)
 
     if pending_command and pending_ts > 0 and (now - pending_ts) > confirm_timeout_sec:
-        state.pop("pending_command", None)
-        state.pop("pending_command_ts", None)
+        _clear_pending_command(state)
         pending_command = ""
 
     if _is_confirm_phrase(raw_text):
         if pending_command:
             state["last_normalized_command"] = pending_command
             state["last_normalized_command_ts"] = now
-            state.pop("pending_command", None)
-            state.pop("pending_command_ts", None)
+            _clear_pending_command(state)
             return {
                 "decision": "execute_pending",
                 "command_to_execute": pending_command,
@@ -195,8 +199,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
 
     if _is_cancel_phrase(raw_text):
         if pending_command:
-            state.pop("pending_command", None)
-            state.pop("pending_command_ts", None)
+            _clear_pending_command(state)
             return {
                 "decision": "cancelled",
                 "command_to_execute": "",
@@ -286,7 +289,7 @@ def build_execution_prompt(staged_command: str) -> str:
 
 
 def _extract_prompts_block_from_yaml(raw_yaml: str) -> str:
-    match = re.search(r"(?ms)^prompts:\\s*\\|\\s*\\n(.*)$", raw_yaml)
+    match = re.search(r"(?ms)^prompts:\s*\|\s*\n(.*)$", raw_yaml)
     if not match:
         return ""
     return dedent(match.group(1)).strip()
@@ -340,12 +343,28 @@ def _build_ros_mcp_toolset() -> McpToolset:
     )
     ros_mcp_script = os.getenv("ROS_MCP_SERVER_SCRIPT", "/home/husl-ai/workspace/ros-mcp-server/server.py")
     ros_mcp_timeout = int(os.getenv("ROS_MCP_TIMEOUT_SEC", "30"))
+    ros_mcp_stderr_log = os.getenv("ROS_MCP_STDERR_LOG_PATH", "/tmp/ros_mcp_server_stderr.log")
+    wrap_stderr = os.getenv("VOICE_AGENT_WRAP_ROS_MCP_STDERR", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+    wrapper_path = Path(__file__).resolve().parents[2] / "scripts" / "ros_mcp_stdio_wrapper.sh"
+    if wrap_stderr and wrapper_path.exists():
+        command = str(wrapper_path)
+        args = [ros_mcp_python, ros_mcp_script, ros_mcp_stderr_log]
+        logger.info("Using ROS MCP stdio wrapper. stderr -> %s", ros_mcp_stderr_log)
+    else:
+        command = ros_mcp_python
+        args = [ros_mcp_script]
+        logger.info("Using direct ROS MCP stdio process.")
 
     return McpToolset(
         connection_params=StdioConnectionParams(
             server_params=StdioServerParameters(
-                command=ros_mcp_python,
-                args=[ros_mcp_script],
+                command=command,
+                args=args,
             ),
             timeout=ros_mcp_timeout,
         ),
@@ -369,6 +388,8 @@ Safety and UX rules:
 - Ignore filler words, stutters, and non-command chatter.
 - Always stage first, then require explicit confirmation.
 - Prefer high-level safe commands (takeoff, land, hover, rtl, move with distance/altitude).
+- For known PX4 actions from loaded spec, avoid extra introspection calls (for example `get_action_details`) unless a tool call fails.
+- For ROS action execution calls, always set an explicit timeout (at least 60 seconds).
 - If critical details are missing (for example altitude for takeoff), ask a brief follow-up.
 - Never invent ROS tool results.
 - Keep responses concise and spoken-language friendly.
