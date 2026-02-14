@@ -77,9 +77,7 @@ function clearPlaybackQueue() {
   for (const source of activePlaybackSources) {
     try {
       source.stop();
-    } catch (_) {
-      // no-op
-    }
+    } catch (_) {}
   }
   activePlaybackSources.clear();
 

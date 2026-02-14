@@ -23,8 +23,6 @@ from google.genai import types
 
 load_dotenv()
 
-# ADK currently emits a noisy pydantic serializer warning for response_modalities
-# in some versions. This does not affect runtime behavior for this app.
 warnings.filterwarnings(
     "ignore",
     message=r".*response_modalities.*",
@@ -60,7 +58,7 @@ APP_NAME = os.getenv("VOICE_AGENT_APP_NAME", "drone_voice_agent_app")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 TRACE_TOOLS = os.getenv("VOICE_AGENT_TRACE_TOOLS", "true").lower() not in {"0", "false", "no"}
 TOOL_LOG_MAX_CHARS = int(os.getenv("VOICE_AGENT_TOOL_LOG_MAX_CHARS", "900"))
-LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "2"))
+LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "4"))
 LIVE_RETRY_BACKOFF_SEC = float(os.getenv("VOICE_AGENT_LIVE_RETRY_BACKOFF_SEC", "1.0"))
 
 session_service = InMemorySessionService()
@@ -234,10 +232,8 @@ def _is_retryable_live_error(exception: Exception) -> bool:
     status_code = getattr(exception, "status_code", None)
     if isinstance(status_code, int):
         if status_code == 1007:
-            # Invalid argument / payload problems are usually deterministic.
             return False
         if status_code == 1011:
-            # Model-side internal error is often transient.
             return True
         if status_code in {429, 500, 502, 503, 504}:
             return True
@@ -454,13 +450,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 text_message = message.get("text")
 
                 if audio_bytes is not None:
-                    queue_ref["value"].send_realtime(
-                        types.Blob(mime_type="audio/pcm;rate=16000", data=audio_bytes)
-                    )
+                    try:
+                        queue_ref["value"].send_realtime(
+                            types.Blob(mime_type="audio/pcm;rate=16000", data=audio_bytes)
+                        )
+                    except Exception:
+                        continue
                     continue
 
                 if text_message is not None:
-                    await _handle_text_message(text_message, queue_ref["value"])
+                    try:
+                        await _handle_text_message(text_message, queue_ref["value"])
+                    except Exception:
+                        continue
 
         except WebSocketDisconnect:
             logger.info("Client disconnected: %s", session_ref["value"])
@@ -482,7 +484,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await _forward_event(websocket, event, seen_tool_signatures)
                 return
             except Exception as exc:
-                if attempt >= LIVE_RETRY_COUNT or not _is_retryable_live_error(exc):
+                retryable = _is_retryable_live_error(exc)
+                if not retryable:
                     logger.error("Live model stream failed: %s", exc)
                     try:
                         await websocket.send_json(
@@ -491,6 +494,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     except Exception:
                         pass
                     raise
+
+                if attempt >= LIVE_RETRY_COUNT:
+                    logger.warning(
+                        "Live model stream failed (%s). Retry budget reached; continuing with rolling retries.",
+                        exc,
+                    )
+                    attempt = 0
 
                 attempt += 1
                 delay = LIVE_RETRY_BACKOFF_SEC * attempt

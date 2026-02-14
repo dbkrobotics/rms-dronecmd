@@ -1,7 +1,7 @@
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.frameSize = 1600; // 100ms at 16kHz
+    this.frameSize = 1600;
     this.buffer = new Int16Array(this.frameSize);
     this.offset = 0;
   }

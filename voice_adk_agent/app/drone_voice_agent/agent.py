@@ -21,7 +21,11 @@ logger = logging.getLogger("voice_adk_agent.agent")
 
 _FALLBACK_LOCK = threading.RLock()
 _STAGED_BY_CONTEXT: dict[str, tuple[str, float]] = {}
-_APPROVED_BY_CONTEXT: dict[str, tuple[str, float]] = {}
+ASR_REWRITE_MAP = {
+    "petition": "position",
+    "metre": "meter",
+    "metres": "meters",
+}
 
 FILLER_WORDS = {
     "uh",
@@ -118,58 +122,56 @@ def _env_float(name: str, default: float, minimum: float) -> float:
     return value if value >= minimum else default
 
 
-def _context_key(tool_context: ToolContext) -> str:
-    for attr in ("user_id", "session_id", "invocation_id"):
-        value = getattr(tool_context, attr, None)
+def _context_keys(tool_context: ToolContext) -> list[str]:
+    keys: list[str] = []
+
+    def add_key(value: Any, prefix: str) -> None:
         if value:
-            return f"{attr}:{value}"
+            key = f"{prefix}:{value}"
+            if key not in keys:
+                keys.append(key)
+
+    for attr in ("user_id", "session_id", "invocation_id"):
+        add_key(getattr(tool_context, attr, None), attr)
 
     nested = getattr(tool_context, "invocation_context", None) or getattr(
         tool_context, "_invocation_context", None
     )
     if nested is not None:
         for attr in ("user_id", "session_id", "id"):
-            value = getattr(nested, attr, None)
-            if value:
-                return f"nested-{attr}:{value}"
+            add_key(getattr(nested, attr, None), f"nested-{attr}")
 
         session = getattr(nested, "session", None)
         if session is not None:
             sid = getattr(session, "session_id", None) or getattr(session, "id", None)
-            if sid:
-                return f"session:{sid}"
+            add_key(sid, "session")
 
-    return "default"
+    keys.append("default")
+    return keys
 
 
-def _set_fallback_staged(context_key: str, command: str, timestamp: float) -> None:
+def _set_fallback_staged(context_keys: list[str], command: str, timestamp: float) -> None:
     with _FALLBACK_LOCK:
-        _STAGED_BY_CONTEXT[context_key] = (command, timestamp)
+        for context_key in context_keys:
+            _STAGED_BY_CONTEXT[context_key] = (command, timestamp)
 
 
-def _get_fallback_staged(context_key: str) -> tuple[str, float]:
+def _get_fallback_staged(context_keys: list[str]) -> tuple[str, float]:
+    best_command = ""
+    best_ts = 0.0
     with _FALLBACK_LOCK:
-        return _STAGED_BY_CONTEXT.get(context_key, ("", 0.0))
+        for context_key in context_keys:
+            command, ts = _STAGED_BY_CONTEXT.get(context_key, ("", 0.0))
+            if command and ts > best_ts:
+                best_command = command
+                best_ts = ts
+    return best_command, best_ts
 
 
-def _clear_fallback_staged(context_key: str) -> None:
+def _clear_fallback_staged(context_keys: list[str]) -> None:
     with _FALLBACK_LOCK:
-        _STAGED_BY_CONTEXT.pop(context_key, None)
-
-
-def _set_fallback_approved(context_key: str, command: str, timestamp: float) -> None:
-    with _FALLBACK_LOCK:
-        _APPROVED_BY_CONTEXT[context_key] = (command, timestamp)
-
-
-def _get_fallback_approved(context_key: str) -> tuple[str, float]:
-    with _FALLBACK_LOCK:
-        return _APPROVED_BY_CONTEXT.get(context_key, ("", 0.0))
-
-
-def _clear_fallback_approved(context_key: str) -> None:
-    with _FALLBACK_LOCK:
-        _APPROVED_BY_CONTEXT.pop(context_key, None)
+        for context_key in context_keys:
+            _STAGED_BY_CONTEXT.pop(context_key, None)
 
 
 def _collapse_adjacent_duplicates(tokens: list[str]) -> list[str]:
@@ -214,6 +216,8 @@ def _collapse_duplicate_bigrams(tokens: list[str]) -> list[str]:
 
 def _normalize_text(raw_text: str) -> str:
     lowered = raw_text.lower().strip()
+    for source, target in ASR_REWRITE_MAP.items():
+        lowered = re.sub(rf"\b{re.escape(source)}\b", target, lowered)
     lowered = re.sub(r"```[\s\S]*?```", " ", lowered)
     lowered = re.sub(r"[^0-9a-zA-Z/_\-\.\s]", " ", lowered)
     lowered = re.sub(r"\s+", " ", lowered).strip()
@@ -235,7 +239,6 @@ def _normalize_phrase_for_match(text: str) -> str:
 
 
 def _clear_pending_command(state: Any) -> None:
-    # ADK State is not a dict and doesn't implement pop(); overwrite keys instead.
     state["pending_command"] = ""
     state["pending_command_ts"] = 0.0
 
@@ -243,11 +246,6 @@ def _clear_pending_command(state: Any) -> None:
 def _clear_staged_backup(state: Any) -> None:
     state["staged_command_backup"] = ""
     state["staged_command_backup_ts"] = 0.0
-
-
-def _clear_execution_approval(state: Any) -> None:
-    state["approved_command"] = ""
-    state["approved_command_ts"] = 0.0
 
 
 def _contains_action(normalized_text: str) -> bool:
@@ -279,71 +277,49 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     raw_text = (command or "").strip()
     normalized = _normalize_text(raw_text)
     state = tool_context.state
-    context_key = _context_key(tool_context)
+    context_keys = _context_keys(tool_context)
     now = time.time()
     confirm_timeout_sec = _env_float("VOICE_AGENT_CONFIRM_TIMEOUT_SEC", 45.0, 3.0)
     duplicate_window_sec = _env_float("VOICE_AGENT_DUPLICATE_WINDOW_SEC", 8.0, 0.0)
-    approval_timeout_sec = _env_float("VOICE_AGENT_APPROVAL_TIMEOUT_SEC", 20.0, 3.0)
 
     pending_command = str(state.get("pending_command", ""))
     pending_ts = float(state.get("pending_command_ts", 0.0) or 0.0)
     staged_backup = str(state.get("staged_command_backup", ""))
     staged_backup_ts = float(state.get("staged_command_backup_ts", 0.0) or 0.0)
-    approved_command = str(state.get("approved_command", ""))
-    approved_ts = float(state.get("approved_command_ts", 0.0) or 0.0)
-
-    fallback_staged, fallback_staged_ts = _get_fallback_staged(context_key)
-    fallback_approved, fallback_approved_ts = _get_fallback_approved(context_key)
+    fallback_staged, fallback_staged_ts = _get_fallback_staged(context_keys)
 
     if not pending_command and fallback_staged and fallback_staged_ts > 0:
         if (now - fallback_staged_ts) <= confirm_timeout_sec:
             pending_command = fallback_staged
         else:
-            _clear_fallback_staged(context_key)
-    if not approved_command and fallback_approved and fallback_approved_ts > 0:
-        if (now - fallback_approved_ts) <= approval_timeout_sec:
-            approved_command = fallback_approved
-            approved_ts = fallback_approved_ts
-        else:
-            _clear_fallback_approved(context_key)
+            _clear_fallback_staged(context_keys)
 
     if pending_command and pending_ts > 0 and (now - pending_ts) > confirm_timeout_sec:
         _clear_pending_command(state)
         pending_command = ""
-        _clear_execution_approval(state)
-        approved_command = ""
         _clear_staged_backup(state)
         staged_backup = ""
-        _clear_fallback_staged(context_key)
-        _clear_fallback_approved(context_key)
+        _clear_fallback_staged(context_keys)
 
     if staged_backup and staged_backup_ts > 0 and (now - staged_backup_ts) > confirm_timeout_sec:
         _clear_staged_backup(state)
         staged_backup = ""
-        _clear_fallback_staged(context_key)
-
-    if approved_command and approved_ts > 0 and (now - approved_ts) > approval_timeout_sec:
-        _clear_execution_approval(state)
-        approved_command = ""
-        _clear_fallback_approved(context_key)
+        _clear_fallback_staged(context_keys)
 
     if _is_confirm_phrase(raw_text):
         if not pending_command and staged_backup:
             pending_command = staged_backup
         if not pending_command:
-            fallback_staged, fallback_staged_ts = _get_fallback_staged(context_key)
+            fallback_staged, fallback_staged_ts = _get_fallback_staged(context_keys)
             if fallback_staged and (now - fallback_staged_ts) <= confirm_timeout_sec:
                 pending_command = fallback_staged
 
         if pending_command:
             state["last_normalized_command"] = pending_command
             state["last_normalized_command_ts"] = now
-            state["approved_command"] = pending_command
-            state["approved_command_ts"] = now
-            _set_fallback_approved(context_key, pending_command, now)
             _clear_pending_command(state)
             _clear_staged_backup(state)
-            _clear_fallback_staged(context_key)
+            _clear_fallback_staged(context_keys)
             return {
                 "decision": "execute_pending",
                 "command_to_execute": pending_command,
@@ -367,10 +343,8 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
         }
 
     if _is_cancel_phrase(raw_text):
-        _clear_execution_approval(state)
         _clear_staged_backup(state)
-        _clear_fallback_staged(context_key)
-        _clear_fallback_approved(context_key)
+        _clear_fallback_staged(context_keys)
         if pending_command:
             _clear_pending_command(state)
             return {
@@ -503,12 +477,11 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
             "reason": "Duplicate command detected. Waiting for an updated command or explicit confirm.",
         }
 
-    # Stage only actionable drone commands. Execution is gated by explicit confirm.
     state["pending_command"] = normalized
     state["pending_command_ts"] = now
     state["staged_command_backup"] = normalized
     state["staged_command_backup_ts"] = now
-    _set_fallback_staged(context_key, normalized, now)
+    _set_fallback_staged(context_keys, normalized, now)
 
     return {
         "decision": "needs_confirmation",
@@ -623,7 +596,6 @@ Always follow this exact workflow for every user turn:
 Safety and UX rules:
 - Ignore filler words, stutters, and non-command chatter.
 - Always stage first, then require explicit confirmation.
-- Treat confirmation approval as one-time and time-limited.
 - Prefer high-level safe commands (takeoff, land, hover, rtl, move with distance/altitude).
 - For current-status questions (position, altitude, battery, pose, state), do not ask for confirm. Use read-only tools like `get_topics`, `get_topic_type`, and `subscribe_once`.
 - For position queries on PX4, prioritize these topics in order: `/mavros/local_position/pose`, `/mavros/global_position/local`, `/mavros/global_position/global`, then similar available pose/odom topics.
