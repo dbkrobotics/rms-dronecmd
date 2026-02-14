@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from textwrap import dedent
@@ -17,6 +18,10 @@ from mcp import StdioServerParameters
 
 load_dotenv()
 logger = logging.getLogger("voice_adk_agent.agent")
+
+_FALLBACK_LOCK = threading.RLock()
+_STAGED_BY_CONTEXT: dict[str, tuple[str, float]] = {}
+_APPROVED_BY_CONTEXT: dict[str, tuple[str, float]] = {}
 
 FILLER_WORDS = {
     "uh",
@@ -105,6 +110,60 @@ def _env_float(name: str, default: float, minimum: float) -> float:
     except Exception:
         return default
     return value if value >= minimum else default
+
+
+def _context_key(tool_context: ToolContext) -> str:
+    for attr in ("session_id", "user_id", "invocation_id"):
+        value = getattr(tool_context, attr, None)
+        if value:
+            return f"{attr}:{value}"
+
+    nested = getattr(tool_context, "invocation_context", None) or getattr(
+        tool_context, "_invocation_context", None
+    )
+    if nested is not None:
+        for attr in ("session_id", "user_id", "id"):
+            value = getattr(nested, attr, None)
+            if value:
+                return f"nested-{attr}:{value}"
+
+        session = getattr(nested, "session", None)
+        if session is not None:
+            sid = getattr(session, "session_id", None) or getattr(session, "id", None)
+            if sid:
+                return f"session:{sid}"
+
+    return "default"
+
+
+def _set_fallback_staged(context_key: str, command: str, timestamp: float) -> None:
+    with _FALLBACK_LOCK:
+        _STAGED_BY_CONTEXT[context_key] = (command, timestamp)
+
+
+def _get_fallback_staged(context_key: str) -> tuple[str, float]:
+    with _FALLBACK_LOCK:
+        return _STAGED_BY_CONTEXT.get(context_key, ("", 0.0))
+
+
+def _clear_fallback_staged(context_key: str) -> None:
+    with _FALLBACK_LOCK:
+        _STAGED_BY_CONTEXT.pop(context_key, None)
+
+
+def _set_fallback_approved(context_key: str, command: str, timestamp: float) -> None:
+    with _FALLBACK_LOCK:
+        _APPROVED_BY_CONTEXT[context_key] = (command, timestamp)
+
+
+def _get_fallback_approved(context_key: str) -> tuple[str, float]:
+    with _FALLBACK_LOCK:
+        return _APPROVED_BY_CONTEXT.get(context_key, ("", 0.0))
+
+
+def _clear_fallback_approved(context_key: str) -> None:
+    with _FALLBACK_LOCK:
+        _APPROVED_BY_CONTEXT.pop(context_key, None)
 
 
 def _collapse_adjacent_duplicates(tokens: list[str]) -> list[str]:
@@ -211,6 +270,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     raw_text = (command or "").strip()
     normalized = _normalize_text(raw_text)
     state = tool_context.state
+    context_key = _context_key(tool_context)
     now = time.time()
     confirm_timeout_sec = _env_float("VOICE_AGENT_CONFIRM_TIMEOUT_SEC", 45.0, 3.0)
     duplicate_window_sec = _env_float("VOICE_AGENT_DUPLICATE_WINDOW_SEC", 8.0, 0.0)
@@ -223,6 +283,21 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     approved_command = str(state.get("approved_command", ""))
     approved_ts = float(state.get("approved_command_ts", 0.0) or 0.0)
 
+    fallback_staged, fallback_staged_ts = _get_fallback_staged(context_key)
+    fallback_approved, fallback_approved_ts = _get_fallback_approved(context_key)
+
+    if not pending_command and fallback_staged and fallback_staged_ts > 0:
+        if (now - fallback_staged_ts) <= confirm_timeout_sec:
+            pending_command = fallback_staged
+        else:
+            _clear_fallback_staged(context_key)
+    if not approved_command and fallback_approved and fallback_approved_ts > 0:
+        if (now - fallback_approved_ts) <= approval_timeout_sec:
+            approved_command = fallback_approved
+            approved_ts = fallback_approved_ts
+        else:
+            _clear_fallback_approved(context_key)
+
     if pending_command and pending_ts > 0 and (now - pending_ts) > confirm_timeout_sec:
         _clear_pending_command(state)
         pending_command = ""
@@ -230,26 +305,36 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
         approved_command = ""
         _clear_staged_backup(state)
         staged_backup = ""
+        _clear_fallback_staged(context_key)
+        _clear_fallback_approved(context_key)
 
     if staged_backup and staged_backup_ts > 0 and (now - staged_backup_ts) > confirm_timeout_sec:
         _clear_staged_backup(state)
         staged_backup = ""
+        _clear_fallback_staged(context_key)
 
     if approved_command and approved_ts > 0 and (now - approved_ts) > approval_timeout_sec:
         _clear_execution_approval(state)
         approved_command = ""
+        _clear_fallback_approved(context_key)
 
     if _is_confirm_phrase(raw_text):
         if not pending_command and staged_backup:
             pending_command = staged_backup
+        if not pending_command:
+            fallback_staged, fallback_staged_ts = _get_fallback_staged(context_key)
+            if fallback_staged and (now - fallback_staged_ts) <= confirm_timeout_sec:
+                pending_command = fallback_staged
 
         if pending_command:
             state["last_normalized_command"] = pending_command
             state["last_normalized_command_ts"] = now
             state["approved_command"] = pending_command
             state["approved_command_ts"] = now
+            _set_fallback_approved(context_key, pending_command, now)
             _clear_pending_command(state)
             _clear_staged_backup(state)
+            _clear_fallback_staged(context_key)
             return {
                 "decision": "execute_pending",
                 "command_to_execute": pending_command,
@@ -275,6 +360,8 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     if _is_cancel_phrase(raw_text):
         _clear_execution_approval(state)
         _clear_staged_backup(state)
+        _clear_fallback_staged(context_key)
+        _clear_fallback_approved(context_key)
         if pending_command:
             _clear_pending_command(state)
             return {
@@ -398,6 +485,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     state["pending_command_ts"] = now
     state["staged_command_backup"] = normalized
     state["staged_command_backup_ts"] = now
+    _set_fallback_staged(context_key, normalized, now)
 
     return {
         "decision": "needs_confirmation",
@@ -416,6 +504,7 @@ def build_execution_prompt(staged_command: str, tool_context: ToolContext) -> di
     """Returns a one-time approved execution prompt, only when confirmation was accepted."""
 
     state = tool_context.state
+    context_key = _context_key(tool_context)
     now = time.time()
     approval_timeout_sec = _env_float("VOICE_AGENT_APPROVAL_TIMEOUT_SEC", 20.0, 3.0)
 
@@ -423,6 +512,12 @@ def build_execution_prompt(staged_command: str, tool_context: ToolContext) -> di
     normalized = normalized if normalized else staged_command.strip()
     approved_command = str(state.get("approved_command", ""))
     approved_ts = float(state.get("approved_command_ts", 0.0) or 0.0)
+
+    if not approved_command:
+        fallback_approved, fallback_approved_ts = _get_fallback_approved(context_key)
+        if fallback_approved and fallback_approved_ts > 0:
+            approved_command = fallback_approved
+            approved_ts = fallback_approved_ts
 
     if not approved_command:
         return {
@@ -433,6 +528,7 @@ def build_execution_prompt(staged_command: str, tool_context: ToolContext) -> di
 
     if approved_ts <= 0 or (now - approved_ts) > approval_timeout_sec:
         _clear_execution_approval(state)
+        _clear_fallback_approved(context_key)
         return {
             "allowed": False,
             "result": "",
@@ -448,6 +544,7 @@ def build_execution_prompt(staged_command: str, tool_context: ToolContext) -> di
 
     # One-time approval consumption to prevent repeated execution.
     _clear_execution_approval(state)
+    _clear_fallback_approved(context_key)
     return {"allowed": True, "result": normalized, "reason": "Command approved for execution."}
 
 
