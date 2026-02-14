@@ -60,7 +60,7 @@ APP_NAME = os.getenv("VOICE_AGENT_APP_NAME", "drone_voice_agent_app")
 WEB_DIR = Path(__file__).resolve().parent / "web"
 TRACE_TOOLS = os.getenv("VOICE_AGENT_TRACE_TOOLS", "true").lower() not in {"0", "false", "no"}
 TOOL_LOG_MAX_CHARS = int(os.getenv("VOICE_AGENT_TOOL_LOG_MAX_CHARS", "900"))
-LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "0"))
+LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "2"))
 LIVE_RETRY_BACKOFF_SEC = float(os.getenv("VOICE_AGENT_LIVE_RETRY_BACKOFF_SEC", "1.0"))
 
 session_service = InMemorySessionService()
@@ -233,10 +233,12 @@ def _extract_tool_activity_from_part(part: Any) -> list[dict[str, Any]]:
 def _is_retryable_live_error(exception: Exception) -> bool:
     status_code = getattr(exception, "status_code", None)
     if isinstance(status_code, int):
-        if status_code in {1007, 1011}:
-            # These usually indicate payload/session-level problems; retrying the same stream
-            # tends to fail again immediately.
+        if status_code == 1007:
+            # Invalid argument / payload problems are usually deterministic.
             return False
+        if status_code == 1011:
+            # Model-side internal error is often transient.
+            return True
         if status_code in {429, 500, 502, 503, 504}:
             return True
 
@@ -244,7 +246,7 @@ def _is_retryable_live_error(exception: Exception) -> bool:
     if "1007" in text or "invalid argument" in text:
         return False
     if "1011" in text or "internal error occurred" in text:
-        return False
+        return True
     return (
         "connection closed" in text
         or "temporarily unavailable" in text
