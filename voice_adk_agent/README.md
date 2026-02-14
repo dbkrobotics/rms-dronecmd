@@ -84,4 +84,4 @@ After startup, use the printed `ngrok public URL` on your phone browser.
 - Confirmation approval is one-time and expires by `VOICE_AGENT_APPROVAL_TIMEOUT_SEC`.
 - Tool observability: terminal now prints `TOOL_CALL` / `TOOL_RESULT` traces, and the web UI event log shows the same.
 - If needed, inspect low-level ROS MCP stderr in `/tmp/ros_mcp_server_stderr.log`.
-- Transient live model drops (for example websocket code `1011`) are retried automatically with `VOICE_AGENT_LIVE_RETRY_COUNT`.
+- Optional retry for transient live model drops is controlled by `VOICE_AGENT_LIVE_RETRY_COUNT` (default: `0`).

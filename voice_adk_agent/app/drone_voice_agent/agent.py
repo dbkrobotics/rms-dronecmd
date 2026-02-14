@@ -98,6 +98,15 @@ CANCEL_KEYWORDS = {
 }
 
 
+def _env_float(name: str, default: float, minimum: float) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        value = float(raw)
+    except Exception:
+        return default
+    return value if value >= minimum else default
+
+
 def _collapse_adjacent_duplicates(tokens: list[str]) -> list[str]:
     if not tokens:
         return tokens
@@ -166,6 +175,11 @@ def _clear_pending_command(state: Any) -> None:
     state["pending_command_ts"] = 0.0
 
 
+def _clear_staged_backup(state: Any) -> None:
+    state["staged_command_backup"] = ""
+    state["staged_command_backup_ts"] = 0.0
+
+
 def _clear_execution_approval(state: Any) -> None:
     state["approved_command"] = ""
     state["approved_command_ts"] = 0.0
@@ -198,12 +212,14 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     normalized = _normalize_text(raw_text)
     state = tool_context.state
     now = time.time()
-    confirm_timeout_sec = float(os.getenv("VOICE_AGENT_CONFIRM_TIMEOUT_SEC", "45"))
-    duplicate_window_sec = float(os.getenv("VOICE_AGENT_DUPLICATE_WINDOW_SEC", "8"))
-    approval_timeout_sec = float(os.getenv("VOICE_AGENT_APPROVAL_TIMEOUT_SEC", "20"))
+    confirm_timeout_sec = _env_float("VOICE_AGENT_CONFIRM_TIMEOUT_SEC", 45.0, 3.0)
+    duplicate_window_sec = _env_float("VOICE_AGENT_DUPLICATE_WINDOW_SEC", 8.0, 0.0)
+    approval_timeout_sec = _env_float("VOICE_AGENT_APPROVAL_TIMEOUT_SEC", 20.0, 3.0)
 
     pending_command = str(state.get("pending_command", ""))
     pending_ts = float(state.get("pending_command_ts", 0.0) or 0.0)
+    staged_backup = str(state.get("staged_command_backup", ""))
+    staged_backup_ts = float(state.get("staged_command_backup_ts", 0.0) or 0.0)
     approved_command = str(state.get("approved_command", ""))
     approved_ts = float(state.get("approved_command_ts", 0.0) or 0.0)
 
@@ -212,18 +228,28 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
         pending_command = ""
         _clear_execution_approval(state)
         approved_command = ""
+        _clear_staged_backup(state)
+        staged_backup = ""
+
+    if staged_backup and staged_backup_ts > 0 and (now - staged_backup_ts) > confirm_timeout_sec:
+        _clear_staged_backup(state)
+        staged_backup = ""
 
     if approved_command and approved_ts > 0 and (now - approved_ts) > approval_timeout_sec:
         _clear_execution_approval(state)
         approved_command = ""
 
     if _is_confirm_phrase(raw_text):
+        if not pending_command and staged_backup:
+            pending_command = staged_backup
+
         if pending_command:
             state["last_normalized_command"] = pending_command
             state["last_normalized_command_ts"] = now
             state["approved_command"] = pending_command
             state["approved_command_ts"] = now
             _clear_pending_command(state)
+            _clear_staged_backup(state)
             return {
                 "decision": "execute_pending",
                 "command_to_execute": pending_command,
@@ -248,6 +274,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
 
     if _is_cancel_phrase(raw_text):
         _clear_execution_approval(state)
+        _clear_staged_backup(state)
         if pending_command:
             _clear_pending_command(state)
             return {
@@ -369,6 +396,8 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
     # Stage only actionable drone commands. Execution is gated by explicit confirm.
     state["pending_command"] = normalized
     state["pending_command_ts"] = now
+    state["staged_command_backup"] = normalized
+    state["staged_command_backup_ts"] = now
 
     return {
         "decision": "needs_confirmation",
@@ -388,7 +417,7 @@ def build_execution_prompt(staged_command: str, tool_context: ToolContext) -> di
 
     state = tool_context.state
     now = time.time()
-    approval_timeout_sec = float(os.getenv("VOICE_AGENT_APPROVAL_TIMEOUT_SEC", "20"))
+    approval_timeout_sec = _env_float("VOICE_AGENT_APPROVAL_TIMEOUT_SEC", 20.0, 3.0)
 
     normalized = _normalize_text(staged_command)
     normalized = normalized if normalized else staged_command.strip()
