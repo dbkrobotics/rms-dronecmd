@@ -500,54 +500,6 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
         "reason": "Command staged. Do not execute yet. Ask user to say confirm.",
     }
 
-def build_execution_prompt(staged_command: str, tool_context: ToolContext) -> dict[str, Any]:
-    """Returns a one-time approved execution prompt, only when confirmation was accepted."""
-
-    state = tool_context.state
-    context_key = _context_key(tool_context)
-    now = time.time()
-    approval_timeout_sec = _env_float("VOICE_AGENT_APPROVAL_TIMEOUT_SEC", 20.0, 3.0)
-
-    normalized = _normalize_text(staged_command)
-    normalized = normalized if normalized else staged_command.strip()
-    approved_command = str(state.get("approved_command", ""))
-    approved_ts = float(state.get("approved_command_ts", 0.0) or 0.0)
-
-    if not approved_command:
-        fallback_approved, fallback_approved_ts = _get_fallback_approved(context_key)
-        if fallback_approved and fallback_approved_ts > 0:
-            approved_command = fallback_approved
-            approved_ts = fallback_approved_ts
-
-    if not approved_command:
-        return {
-            "allowed": False,
-            "result": "",
-            "reason": "Execution blocked. No confirmed command is currently approved.",
-        }
-
-    if approved_ts <= 0 or (now - approved_ts) > approval_timeout_sec:
-        _clear_execution_approval(state)
-        _clear_fallback_approved(context_key)
-        return {
-            "allowed": False,
-            "result": "",
-            "reason": "Execution blocked. Confirmation expired. Ask user to confirm again.",
-        }
-
-    if normalized != approved_command:
-        return {
-            "allowed": False,
-            "result": "",
-            "reason": "Execution blocked. Requested command does not match the confirmed command.",
-        }
-
-    # One-time approval consumption to prevent repeated execution.
-    _clear_execution_approval(state)
-    _clear_fallback_approved(context_key)
-    return {"allowed": True, "result": normalized, "reason": "Command approved for execution."}
-
-
 def _extract_prompts_block_from_yaml(raw_yaml: str) -> str:
     match = re.search(r"(?ms)^prompts:\s*\|\s*\n(.*)$", raw_yaml)
     if not match:
@@ -640,11 +592,9 @@ Always follow this exact workflow for every user turn:
 3. If `decision` is `needs_confirmation`, do not call ROS tools. Tell the user which command is staged and ask them to say `confirm`.
 4. If `decision` is `duplicate_blocked`, do not call ROS tools. Ask the user to update the command or say `confirm`.
 5. If `decision` is `cancelled`, acknowledge cancellation and wait for a new command.
-6. If `decision` is `execute_pending`, call `build_execution_prompt` with `command_to_execute`.
-7. If `build_execution_prompt.allowed` is `false`, do not call ROS tools and ask user to confirm again.
-8. If `build_execution_prompt.allowed` is `true`, execute only `build_execution_prompt.result` via ROS MCP tools.
-9. Never execute ROS tools unless `decision` is `execute_pending` and `build_execution_prompt.allowed` is `true`.
-10. After tool execution, summarize what was executed and current status in <= 2 short sentences.
+6. If `decision` is `execute_pending`, execute only `command_to_execute` via ROS MCP tools.
+7. Never execute ROS tools unless `decision` is `execute_pending`.
+8. After tool execution, summarize what was executed and current status in <= 2 short sentences.
 
 Safety and UX rules:
 - Ignore filler words, stutters, and non-command chatter.
@@ -684,7 +634,6 @@ root_agent = Agent(
     instruction=AGENT_INSTRUCTION,
     tools=[
         FunctionTool(func=sanitize_voice_command),
-        FunctionTool(func=build_execution_prompt),
         _build_ros_mcp_toolset(),
     ],
 )
