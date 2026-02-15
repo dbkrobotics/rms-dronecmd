@@ -52,7 +52,6 @@ ACTION_PATTERNS = [
     r"\breturn\s*to\s*launch\b",
     r"\breturn\s*home\b",
     r"\brtl\b",
-    r"\bstop\b",
     r"\bmove\b",
     r"\bgo\b",
     r"\bforward\b",

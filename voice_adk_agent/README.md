@@ -46,26 +46,7 @@ Edit `.env`:
 - Default behavior redirects noisy ROS MCP stderr logs to `/tmp/ros_mcp_server_stderr.log`
 - Optional: tune third-party SDK log verbosity with `VOICE_AGENT_THIRD_PARTY_LOG_LEVEL` (default: `CRITICAL`)
 
-## Run
-
-```bash
-cd /home/husl-ai/workspace/ros2_ws/src/rms-dronecmd/voice_adk_agent
-source .venv/bin/activate
-./scripts/run_voice_agent.sh
-```
-
-Open:
-
-- `http://localhost:8787`
-
-Then:
-
-1. Click `Connect`
-2. Click `Start Mic`
-3. Speak a command
-4. Say `confirm` to execute (say `cancel` to discard)
-
-## Smartphone Prototyping with ngrok
+## Run (ngrok only)
 
 ```bash
 cd /home/husl-ai/workspace/ros2_ws/src/rms-dronecmd/voice_adk_agent
@@ -73,7 +54,17 @@ source .venv/bin/activate
 ./scripts/run_with_ngrok.sh
 ```
 
-After startup, use the printed `ngrok public URL` on your phone browser.
+Open either:
+
+- Printed `ngrok public URL` (phone/browser external access)
+- `http://localhost:8787` (same machine)
+
+Then:
+
+1. Click `Connect`
+2. Click `Start Mic`
+3. Speak a command
+4. Say `confirm` to execute (say `cancel` to discard)
 
 ## Notes
 
