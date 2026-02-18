@@ -77,6 +77,11 @@ CAMERA_PREVIEW_FPS = float(os.getenv("VOICE_AGENT_CAMERA_PREVIEW_FPS", "4.0"))
 CAMERA_MODEL_FPS = float(os.getenv("VOICE_AGENT_CAMERA_MODEL_FPS", "2.0"))
 CAMERA_JPEG_QUALITY = int(os.getenv("VOICE_AGENT_CAMERA_JPEG_QUALITY", "65"))
 CAMERA_RETRY_SEC = float(os.getenv("VOICE_AGENT_CAMERA_RETRY_SEC", "1.0"))
+CAMERA_FILTER_UNREADABLE = os.getenv("VOICE_AGENT_CAMERA_FILTER_UNREADABLE", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 session_service = InMemorySessionService()
 runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
@@ -138,16 +143,79 @@ def _select_preferred_camera(devices: Sequence[Mapping[str, str]]) -> str:
     return str(devices[0].get("id", "")) if devices else CAMERA_DEVICE_DEFAULT
 
 
+def _probe_camera_device(camera_device: str) -> dict[str, Any]:
+    try:
+        capture, source = _open_camera_capture(camera_device)
+    except Exception as exc:
+        return {
+            "readable": False,
+            "source": camera_device,
+            "error": str(exc),
+        }
+
+    try:
+        frame_packet = _read_camera_frame_jpeg(capture)
+        if frame_packet is None:
+            return {
+                "readable": False,
+                "source": source,
+                "error": "camera opened but no readable frame",
+            }
+
+        _, width, height = frame_packet
+        return {
+            "readable": True,
+            "source": source,
+            "width": width,
+            "height": height,
+        }
+    finally:
+        with suppress(Exception):
+            capture.release()
+
+
 @app.get("/api/cameras")
 async def list_cameras() -> JSONResponse:
-    cameras = _discover_camera_devices()
-    available_ids = {str(item.get("id", "")) for item in cameras}
-    default_camera = CAMERA_DEVICE_DEFAULT if CAMERA_DEVICE_DEFAULT in available_ids else _select_preferred_camera(cameras)
+    raw_cameras = _discover_camera_devices()
+    cameras: list[dict[str, Any]] = []
+    for item in raw_cameras:
+        camera_id = str(item.get("id", "")).strip()
+        probe = await asyncio.to_thread(_probe_camera_device, camera_id)
+        merged = {
+            "id": camera_id,
+            "label": str(item.get("label", camera_id)),
+            **probe,
+        }
+        if CAMERA_FILTER_UNREADABLE and not bool(merged.get("readable")):
+            continue
+        cameras.append(merged)
+
+    if not cameras and raw_cameras:
+        # Fallback for diagnostics: show all when nothing is readable.
+        for item in raw_cameras:
+            camera_id = str(item.get("id", "")).strip()
+            cameras.append(
+                {
+                    "id": camera_id,
+                    "label": str(item.get("label", camera_id)),
+                    "readable": False,
+                    "source": camera_id,
+                }
+            )
+
+    available_ids = {str(item.get("id", "")) for item in cameras if bool(item.get("readable", True))}
+    if CAMERA_DEVICE_DEFAULT in available_ids:
+        default_camera = CAMERA_DEVICE_DEFAULT
+    else:
+        readable_candidates = [item for item in cameras if bool(item.get("readable", False))]
+        default_camera = _select_preferred_camera(readable_candidates or cameras)
+
     return JSONResponse(
         {
             "cameras": cameras,
             "opencv_available": bool(cv2),
             "default_camera": default_camera,
+            "filter_unreadable": CAMERA_FILTER_UNREADABLE,
         }
     )
 

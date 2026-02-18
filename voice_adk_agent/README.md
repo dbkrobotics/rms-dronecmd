@@ -46,6 +46,7 @@ Edit `.env`:
 - Optional: tune third-party SDK log verbosity with `VOICE_AGENT_THIRD_PARTY_LOG_LEVEL` (default: `CRITICAL`)
 - Optional: tune camera frame guard with `VOICE_AGENT_MAX_IMAGE_FRAME_BYTES` (default: `200000`)
 - Set server camera source with `VOICE_AGENT_CAMERA_DEVICE` (example: `/dev/video0`)
+- If multiple `/dev/video*` exist (D455), keep `VOICE_AGENT_CAMERA_FILTER_UNREADABLE=true` to show only readable streams
 
 ## Run (ngrok only)
 

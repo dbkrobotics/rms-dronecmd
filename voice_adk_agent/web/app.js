@@ -88,14 +88,24 @@ function populateServerCameraOptions(cameras, defaultCamera = "") {
   cameras.forEach((camera, index) => {
     const option = document.createElement("option");
     option.value = String(camera.id || "");
-    option.textContent = String(camera.label || `Server camera ${index + 1}`);
+    const readable = camera.readable !== false;
+    const sizeText =
+      Number.isFinite(camera.width) && Number.isFinite(camera.height)
+        ? ` ${camera.width}x${camera.height}`
+        : "";
+    option.textContent = String(
+      `${camera.label || `Server camera ${index + 1}`}${sizeText}${readable ? "" : " (unreadable)"}`
+    );
+    option.disabled = !readable;
     cameraSelect.appendChild(option);
   });
 
+  const readableCameras = cameras.filter((camera) => camera.readable !== false);
+  const candidates = readableCameras.length ? readableCameras : cameras;
   const preferredValue =
-    cameras.find((camera) => String(camera.id) === previous)?.id ||
-    cameras.find((camera) => String(camera.id) === defaultCamera)?.id ||
-    cameras[0].id;
+    candidates.find((camera) => String(camera.id) === previous)?.id ||
+    candidates.find((camera) => String(camera.id) === defaultCamera)?.id ||
+    candidates[0].id;
 
   cameraSelect.value = String(preferredValue || "");
 }
@@ -113,6 +123,9 @@ async function refreshServerCameras() {
 
     if (payload.opencv_available === false) {
       appendLog("Server camera unavailable: OpenCV dependency missing");
+    }
+    if (payload.filter_unreadable && cameras.length === 0) {
+      appendLog("No readable server camera found");
     }
   } catch (error) {
     appendLog(`Camera list load failed: ${error}`);
