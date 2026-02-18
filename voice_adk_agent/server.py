@@ -7,6 +7,7 @@ import logging
 import os
 import warnings
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -20,6 +21,11 @@ from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+
+try:
+    import cv2
+except Exception:
+    cv2 = None
 
 load_dotenv()
 
@@ -62,6 +68,14 @@ LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "4"))
 LIVE_RETRY_BACKOFF_SEC = float(os.getenv("VOICE_AGENT_LIVE_RETRY_BACKOFF_SEC", "1.0"))
 MAX_IMAGE_FRAME_BYTES = int(os.getenv("VOICE_AGENT_MAX_IMAGE_FRAME_BYTES", "200000"))
 ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+CAMERA_DEVICE_DEFAULT = os.getenv("VOICE_AGENT_CAMERA_DEVICE", "/dev/video0").strip() or "/dev/video0"
+CAMERA_WIDTH = int(os.getenv("VOICE_AGENT_CAMERA_WIDTH", "1280"))
+CAMERA_HEIGHT = int(os.getenv("VOICE_AGENT_CAMERA_HEIGHT", "720"))
+CAMERA_CAPTURE_FPS = float(os.getenv("VOICE_AGENT_CAMERA_CAPTURE_FPS", "20.0"))
+CAMERA_PREVIEW_FPS = float(os.getenv("VOICE_AGENT_CAMERA_PREVIEW_FPS", "4.0"))
+CAMERA_MODEL_FPS = float(os.getenv("VOICE_AGENT_CAMERA_MODEL_FPS", "2.0"))
+CAMERA_JPEG_QUALITY = int(os.getenv("VOICE_AGENT_CAMERA_JPEG_QUALITY", "65"))
+CAMERA_RETRY_SEC = float(os.getenv("VOICE_AGENT_CAMERA_RETRY_SEC", "1.0"))
 
 session_service = InMemorySessionService()
 runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
@@ -78,6 +92,166 @@ async def index() -> FileResponse:
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
     return JSONResponse({"status": "ok", "app": APP_NAME})
+
+
+def _camera_source_value(camera_device: str) -> int | str:
+    value = camera_device.strip()
+    if value.isdigit():
+        return int(value)
+    return value or CAMERA_DEVICE_DEFAULT
+
+
+def _discover_camera_devices() -> list[dict[str, str]]:
+    devices: list[dict[str, str]] = []
+    dev_root = Path("/dev")
+    sys_root = Path("/sys/class/video4linux")
+
+    for device_path in sorted(dev_root.glob("video*"), key=lambda path: path.name):
+        if not device_path.exists():
+            continue
+
+        label = device_path.name
+        name_path = sys_root / device_path.name / "name"
+        if name_path.exists():
+            with suppress(Exception):
+                raw_name = name_path.read_text(encoding="utf-8").strip()
+                if raw_name:
+                    label = raw_name
+
+        devices.append({"id": str(device_path), "label": f"{label} ({device_path.name})"})
+
+    if not devices:
+        default_source = str(_camera_source_value(CAMERA_DEVICE_DEFAULT))
+        devices.append({"id": default_source, "label": f"Default camera ({default_source})"})
+
+    return devices
+
+
+@app.get("/api/cameras")
+async def list_cameras() -> JSONResponse:
+    return JSONResponse(
+        {
+            "cameras": _discover_camera_devices(),
+            "opencv_available": bool(cv2),
+            "default_camera": CAMERA_DEVICE_DEFAULT,
+        }
+    )
+
+
+def _open_camera_capture(camera_device: str) -> tuple[Any, str]:
+    if cv2 is None:
+        raise RuntimeError("OpenCV is not available. Install voice_adk_agent requirements first.")
+
+    source_value = _camera_source_value(camera_device)
+    capture = cv2.VideoCapture(source_value)
+    if not capture.isOpened():
+        capture.release()
+        raise RuntimeError(f"Cannot open server camera: {source_value}")
+
+    capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERA_WIDTH))
+    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERA_HEIGHT))
+    capture.set(cv2.CAP_PROP_FPS, float(CAMERA_CAPTURE_FPS))
+    return capture, str(source_value)
+
+
+def _read_camera_frame_jpeg(capture: Any) -> tuple[bytes, int, int] | None:
+    if cv2 is None:
+        return None
+
+    ok, frame = capture.read()
+    if not ok or frame is None:
+        return None
+
+    height, width = frame.shape[:2]
+    success, encoded = cv2.imencode(
+        ".jpg",
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(CAMERA_JPEG_QUALITY)],
+    )
+    if not success:
+        return None
+
+    return encoded.tobytes(), int(width), int(height)
+
+
+async def _run_server_camera_stream(
+    websocket: WebSocket,
+    queue_ref: dict[str, LiveRequestQueue],
+    camera_device: str,
+) -> None:
+    preview_interval = 1.0 / max(CAMERA_PREVIEW_FPS, 0.2)
+    model_interval = 1.0 / max(CAMERA_MODEL_FPS, 0.1)
+    last_preview_at = 0.0
+    last_model_at = 0.0
+    last_error = ""
+    capture = None
+    source_label = camera_device
+    loop = asyncio.get_running_loop()
+
+    try:
+        while True:
+            if capture is None:
+                try:
+                    capture, source_label = await asyncio.to_thread(_open_camera_capture, camera_device)
+                    last_error = ""
+                    await websocket.send_json(
+                        {
+                            "type": "camera_info",
+                            "device": source_label,
+                        }
+                    )
+                except Exception as exc:
+                    detail = str(exc)
+                    if detail != last_error:
+                        last_error = detail
+                        await websocket.send_json(
+                            {
+                                "type": "camera_error",
+                                "detail": detail,
+                            }
+                        )
+                    await asyncio.sleep(max(CAMERA_RETRY_SEC, 0.2))
+                    continue
+
+            frame_packet = await asyncio.to_thread(_read_camera_frame_jpeg, capture)
+            if frame_packet is None:
+                with suppress(Exception):
+                    await asyncio.to_thread(capture.release)
+                capture = None
+                await asyncio.sleep(0.2)
+                continue
+
+            frame_bytes, width, height = frame_packet
+            now = loop.time()
+
+            if now - last_model_at >= model_interval and len(frame_bytes) <= MAX_IMAGE_FRAME_BYTES:
+                with suppress(Exception):
+                    queue_ref["value"].send_realtime(
+                        types.Blob(
+                            mime_type="image/jpeg",
+                            data=frame_bytes,
+                        )
+                    )
+                last_model_at = now
+
+            if now - last_preview_at >= preview_interval:
+                await websocket.send_json(
+                    {
+                        "type": "camera_preview",
+                        "mime_type": "image/jpeg",
+                        "width": width,
+                        "height": height,
+                        "device": source_label,
+                        "data": base64.b64encode(frame_bytes).decode("ascii"),
+                    }
+                )
+                last_preview_at = now
+
+            await asyncio.sleep(0)
+    finally:
+        if capture is not None:
+            with suppress(Exception):
+                await asyncio.to_thread(capture.release)
 
 
 def _build_run_config() -> RunConfig:
@@ -442,6 +616,7 @@ async def _forward_event(websocket: WebSocket, event: Any, seen_tool_signatures:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    selected_camera = str(websocket.query_params.get("camera_device", "")).strip() or CAMERA_DEVICE_DEFAULT
 
     user_id = f"user-{uuid4().hex}"
     session_ref: dict[str, str] = {"value": f"session-{uuid4().hex}"}
@@ -458,6 +633,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "type": "session_started",
             "session_id": session_ref["value"],
             "user_id": user_id,
+            "camera_device": selected_camera,
         }
     )
 
@@ -465,10 +641,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     seen_tool_signatures: set[str] = set()
 
     logger.info(
-        "Live session started: session_id=%s user_id=%s trace_tools=%s",
+        "Live session started: session_id=%s user_id=%s trace_tools=%s camera_device=%s",
         session_ref["value"],
         user_id,
         TRACE_TOOLS,
+        selected_camera,
     )
 
     async def upstream() -> None:
@@ -569,15 +746,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         "type": "session_started",
                         "session_id": session_ref["value"],
                         "user_id": user_id,
+                        "camera_device": selected_camera,
                     }
                 )
                 await asyncio.sleep(delay)
 
     upstream_task = asyncio.create_task(upstream())
     downstream_task = asyncio.create_task(downstream())
+    camera_task = asyncio.create_task(_run_server_camera_stream(websocket, queue_ref, selected_camera))
 
     done, pending = await asyncio.wait(
-        {upstream_task, downstream_task},
+        {upstream_task, downstream_task, camera_task},
         return_when=asyncio.FIRST_COMPLETED,
     )
 

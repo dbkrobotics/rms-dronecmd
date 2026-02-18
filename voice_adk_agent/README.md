@@ -3,7 +3,7 @@
 ## Goal
 
 - Human speaks to a real-time voice agent.
-- Browser camera streams live vision frames to the same agent session.
+- Server camera (D455 or USB UVC) streams live vision frames to the same agent session.
 - The agent uses `ros-mcp-server` tools via MCP.
 - Noise, filler words, and accidental duplicates are filtered before execution.
 - Every command is staged first and is executed only after explicit `confirm`.
@@ -11,12 +11,12 @@
 ## Architecture
 
 1. Browser captures microphone audio (`16kHz PCM`) and sends it via WebSocket.
-2. Browser also captures camera frames (`JPEG`, resized/compressed, no file save) and streams them via WebSocket.
+2. `server.py` captures camera frames on the server machine (`/dev/video*`) and encodes them to JPEG in memory (no file save).
 3. `server.py` forwards audio + camera frames to ADK `Runner.run_live(...)` in `BIDI` streaming mode.
 4. ADK agent (`app/drone_voice_agent/agent.py`) calls:
 - `sanitize_voice_command` (guardrail tool)
 - ROS MCP tools (through `McpToolset` + `StdioConnectionParams`)
-5. Assistant audio (`24kHz PCM`) streams back to browser and plays in near real time.
+5. Browser receives live camera preview frames from the server and assistant audio (`24kHz PCM`) in near real time.
 
 ## Files
 
@@ -45,6 +45,7 @@ Edit `.env`:
 - Default behavior redirects noisy ROS MCP stderr logs to `/tmp/ros_mcp_server_stderr.log`
 - Optional: tune third-party SDK log verbosity with `VOICE_AGENT_THIRD_PARTY_LOG_LEVEL` (default: `CRITICAL`)
 - Optional: tune camera frame guard with `VOICE_AGENT_MAX_IMAGE_FRAME_BYTES` (default: `200000`)
+- Set server camera source with `VOICE_AGENT_CAMERA_DEVICE` (example: `/dev/video0`)
 
 ## Run (ngrok only)
 
@@ -62,7 +63,7 @@ Open either:
 Then:
 
 1. Click `Connect`
-2. Camera preview should appear automatically when the page opens
+2. Select server camera device (`/dev/video*`) if needed
 3. Click `Start Mic`
 4. Speak a command
 5. Say `confirm` to execute (say `cancel` to discard)
@@ -75,7 +76,8 @@ Then:
 - Execution safety: commands are queued and require explicit `confirm`.
 - Read-only status queries (position/altitude/battery/state) run without confirmation using ROS MCP read tools.
 - Camera/vision queries are analysis-only (no movement execution) and use the live streamed view.
-- Vision stream defaults are lightweight (`640x360`, JPEG quality `0.55`, every `500ms`) to keep latency and payload size bounded.
+- Vision defaults are lightweight (`JPEG quality=65`, preview `4fps`, model input `2fps`) to keep latency and payload size bounded.
+- When opening via ngrok on a phone, camera selection still controls server-side cameras, not phone cameras.
 - Tool observability: terminal now prints `TOOL_CALL` / `TOOL_RESULT` traces, and the web UI event log shows the same.
 - If needed, inspect low-level ROS MCP stderr in `/tmp/ros_mcp_server_stderr.log`.
 - Optional retry for transient live model drops is controlled by `VOICE_AGENT_LIVE_RETRY_COUNT` (default: `4`).

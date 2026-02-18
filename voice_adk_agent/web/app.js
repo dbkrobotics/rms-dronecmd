@@ -31,19 +31,6 @@ let nextPlaybackTime = 0;
 const activePlaybackSources = new Set();
 let suppressMicUntilMs = 0;
 
-let cameraStream = null;
-let cameraFrameTimer = null;
-let activeCameraDeviceId = "";
-const frameCanvas = document.createElement("canvas");
-const frameContext = frameCanvas.getContext("2d", { alpha: false });
-
-const VIDEO_SEND_INTERVAL_MS = 500;
-const VIDEO_MAX_WIDTH = 640;
-const VIDEO_MAX_HEIGHT = 360;
-const VIDEO_JPEG_QUALITY = 0.55;
-const VIDEO_MAX_FRAME_BYTES = 180 * 1024;
-const VIDEO_WS_BUFFER_LIMIT = 640 * 1024;
-
 function setStatus(text, level) {
   connectionStatus.textContent = text;
   connectionStatus.classList.remove("ok", "warn", "danger");
@@ -70,7 +57,12 @@ function updateControlState() {
 
 function getWsUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}/ws`;
+  const url = new URL(`${protocol}//${window.location.host}/ws`);
+  const selectedCamera = (cameraSelect.value || "").trim();
+  if (selectedCamera) {
+    url.searchParams.set("camera_device", selectedCamera);
+  }
+  return url.toString();
 }
 
 function normalizeTranscript(text) {
@@ -80,179 +72,51 @@ function normalizeTranscript(text) {
     .replace(/\s+/g, " ");
 }
 
-function estimateBase64Bytes(base64) {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.floor((base64.length * 3) / 4) - padding;
-}
-
-function stopCameraFrameLoop() {
-  if (cameraFrameTimer) {
-    clearInterval(cameraFrameTimer);
-    cameraFrameTimer = null;
-  }
-}
-
-function stopCameraStream() {
-  stopCameraFrameLoop();
-  if (cameraStream) {
-    for (const track of cameraStream.getTracks()) {
-      track.stop();
-    }
-    cameraStream = null;
-  }
-  if (cameraPreview) {
-    cameraPreview.srcObject = null;
-  }
-}
-
-function sendVideoFrame() {
-  if (!frameContext || !cameraPreview || !cameraStream) {
-    return;
-  }
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  if (ws.bufferedAmount > VIDEO_WS_BUFFER_LIMIT) {
-    return;
-  }
-  if (cameraPreview.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-    return;
-  }
-
-  const sourceWidth = cameraPreview.videoWidth;
-  const sourceHeight = cameraPreview.videoHeight;
-  if (!sourceWidth || !sourceHeight) {
-    return;
-  }
-
-  const scale = Math.min(VIDEO_MAX_WIDTH / sourceWidth, VIDEO_MAX_HEIGHT / sourceHeight, 1);
-  const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
-  const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
-
-  if (frameCanvas.width !== targetWidth || frameCanvas.height !== targetHeight) {
-    frameCanvas.width = targetWidth;
-    frameCanvas.height = targetHeight;
-  }
-
-  frameContext.drawImage(cameraPreview, 0, 0, targetWidth, targetHeight);
-  const dataUrl = frameCanvas.toDataURL("image/jpeg", VIDEO_JPEG_QUALITY);
-  const commaIndex = dataUrl.indexOf(",");
-  if (commaIndex < 0) {
-    return;
-  }
-
-  const base64Data = dataUrl.slice(commaIndex + 1);
-  if (estimateBase64Bytes(base64Data) > VIDEO_MAX_FRAME_BYTES) {
-    return;
-  }
-
-  ws.send(
-    JSON.stringify({
-      type: "video_frame",
-      mime_type: "image/jpeg",
-      data: base64Data,
-      width: targetWidth,
-      height: targetHeight,
-    })
-  );
-}
-
-function startCameraFrameLoop() {
-  stopCameraFrameLoop();
-  cameraFrameTimer = setInterval(sendVideoFrame, VIDEO_SEND_INTERVAL_MS);
-}
-
-async function listVideoDevices() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices || !cameraSelect) {
-    return [];
-  }
-
-  const devices = await navigator.mediaDevices.enumerateDevices();
-  const cameras = devices.filter((device) => device.kind === "videoinput");
-  const previousValue = cameraSelect.value;
+function populateServerCameraOptions(cameras, defaultCamera = "") {
+  const previous = cameraSelect.value;
   cameraSelect.innerHTML = "";
+
+  if (!Array.isArray(cameras) || cameras.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No server camera";
+    cameraSelect.appendChild(option);
+    cameraSelect.value = "";
+    return;
+  }
 
   cameras.forEach((camera, index) => {
     const option = document.createElement("option");
-    option.value = camera.deviceId;
-    option.textContent = camera.label || `Camera ${index + 1}`;
+    option.value = String(camera.id || "");
+    option.textContent = String(camera.label || `Server camera ${index + 1}`);
     cameraSelect.appendChild(option);
   });
 
-  if (cameras.length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "No camera";
-    cameraSelect.appendChild(option);
-    cameraSelect.value = "";
-    return cameras;
-  }
+  const preferredValue =
+    cameras.find((camera) => String(camera.id) === previous)?.id ||
+    cameras.find((camera) => String(camera.id) === defaultCamera)?.id ||
+    cameras[0].id;
 
-  const preferred =
-    (activeCameraDeviceId && cameras.find((camera) => camera.deviceId === activeCameraDeviceId)?.deviceId) ||
-    cameras.find((camera) => camera.deviceId === previousValue)?.deviceId ||
-    cameras[0].deviceId;
-  cameraSelect.value = preferred;
-  return cameras;
+  cameraSelect.value = String(preferredValue || "");
 }
 
-async function startCameraPreview(deviceId = "") {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    appendLog("Camera API unavailable in this browser");
-    return;
-  }
-
-  stopCameraStream();
-
-  const constraints = {
-    video: {
-      width: { ideal: 1280, max: 1920 },
-      height: { ideal: 720, max: 1080 },
-      frameRate: { ideal: 30, max: 30 },
-    },
-    audio: false,
-  };
-  if (deviceId) {
-    constraints.video.deviceId = { exact: deviceId };
-  }
-
+async function refreshServerCameras() {
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
-  } catch (error) {
-    if (!deviceId) {
-      throw error;
+    const response = await fetch("/api/cameras", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
-    delete constraints.video.deviceId;
-    cameraStream = await navigator.mediaDevices.getUserMedia(constraints);
-  }
-  cameraPreview.srcObject = cameraStream;
 
-  try {
-    await cameraPreview.play();
-  } catch (_) {
-  }
+    const payload = await response.json();
+    const cameras = Array.isArray(payload.cameras) ? payload.cameras : [];
+    populateServerCameraOptions(cameras, String(payload.default_camera || ""));
 
-  const track = cameraStream.getVideoTracks()[0];
-  if (track) {
-    const settings = track.getSettings ? track.getSettings() : {};
-    activeCameraDeviceId = settings.deviceId || deviceId;
-    appendLog(`Camera ready: ${track.label || "video input"}`);
-  }
-
-  await listVideoDevices();
-  startCameraFrameLoop();
-}
-
-async function initializeCameraPreview() {
-  try {
-    const cameras = await listVideoDevices();
-    if (!cameras.length) {
-      appendLog("No camera detected");
-      return;
+    if (payload.opencv_available === false) {
+      appendLog("Server camera unavailable: OpenCV dependency missing");
     }
-    await startCameraPreview(cameraSelect.value || cameras[0].deviceId);
   } catch (error) {
-    appendLog(`Camera start failed: ${error}`);
+    appendLog(`Camera list load failed: ${error}`);
+    populateServerCameraOptions([], "");
   }
 }
 
@@ -405,7 +269,31 @@ function handleJsonMessage(rawJson) {
 
   const type = message.type;
   if (type === "session_started") {
-    appendLog(`Session started: ${message.session_id}`);
+    const camera = String(message.camera_device || "").trim();
+    const cameraText = camera ? `, camera=${camera}` : "";
+    appendLog(`Session started: ${message.session_id}${cameraText}`);
+    return;
+  }
+
+  if (type === "camera_info") {
+    const device = String(message.device || "").trim();
+    if (device) {
+      appendLog(`Server camera active: ${device}`);
+    }
+    return;
+  }
+
+  if (type === "camera_error") {
+    appendLog(`Camera error: ${message.detail || "unknown"}`);
+    return;
+  }
+
+  if (type === "camera_preview") {
+    const mimeType = String(message.mime_type || "image/jpeg").trim();
+    const data = String(message.data || "").trim();
+    if (data) {
+      cameraPreview.src = `data:${mimeType};base64,${data}`;
+    }
     return;
   }
 
@@ -611,22 +499,17 @@ textInput.addEventListener("keydown", (event) => {
     sendTextMessage();
   }
 });
+
 cameraSelect.addEventListener("change", () => {
-  startCameraPreview(cameraSelect.value).catch((error) => {
-    appendLog(`Camera switch failed: ${error}`);
-  });
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    appendLog("Reconnect to apply selected server camera");
+  }
 });
 
 refreshCameraBtn.addEventListener("click", () => {
-  listVideoDevices().catch((error) => {
-    appendLog(`Camera refresh failed: ${error}`);
-  });
-});
-
-window.addEventListener("beforeunload", () => {
-  stopCameraStream();
+  refreshServerCameras();
 });
 
 updateControlState();
 setStatus("DISCONNECTED", "danger");
-initializeCameraPreview();
+refreshServerCameras();
