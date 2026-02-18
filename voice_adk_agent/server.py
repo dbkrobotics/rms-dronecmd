@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import time
 import warnings
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -127,13 +128,26 @@ def _discover_camera_devices() -> list[dict[str, str]]:
     return devices
 
 
+def _select_preferred_camera(devices: Sequence[Mapping[str, str]]) -> str:
+    keywords = ("rgb", "color", "webcam", "uvc", "camera")
+    for keyword in keywords:
+        for device in devices:
+            label = str(device.get("label", "")).lower()
+            if keyword in label:
+                return str(device.get("id", ""))
+    return str(devices[0].get("id", "")) if devices else CAMERA_DEVICE_DEFAULT
+
+
 @app.get("/api/cameras")
 async def list_cameras() -> JSONResponse:
+    cameras = _discover_camera_devices()
+    available_ids = {str(item.get("id", "")) for item in cameras}
+    default_camera = CAMERA_DEVICE_DEFAULT if CAMERA_DEVICE_DEFAULT in available_ids else _select_preferred_camera(cameras)
     return JSONResponse(
         {
-            "cameras": _discover_camera_devices(),
+            "cameras": cameras,
             "opencv_available": bool(cv2),
-            "default_camera": CAMERA_DEVICE_DEFAULT,
+            "default_camera": default_camera,
         }
     )
 
@@ -143,24 +157,74 @@ def _open_camera_capture(camera_device: str) -> tuple[Any, str]:
         raise RuntimeError("OpenCV is not available. Install voice_adk_agent requirements first.")
 
     source_value = _camera_source_value(camera_device)
-    capture = cv2.VideoCapture(source_value)
-    if not capture.isOpened():
-        capture.release()
-        raise RuntimeError(f"Cannot open server camera: {source_value}")
+    source_candidates: list[Any] = [source_value]
+    source_text = str(source_value)
+    if source_text.startswith("/dev/video"):
+        suffix = source_text.rsplit("video", 1)[-1]
+        if suffix.isdigit():
+            source_candidates.append(int(suffix))
 
-    capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERA_WIDTH))
-    capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERA_HEIGHT))
-    capture.set(cv2.CAP_PROP_FPS, float(CAMERA_CAPTURE_FPS))
-    return capture, str(source_value)
+    backend_candidates: list[int | None] = []
+    if hasattr(cv2, "CAP_V4L2"):
+        backend_candidates.append(int(cv2.CAP_V4L2))
+    if hasattr(cv2, "CAP_ANY"):
+        backend_candidates.append(int(cv2.CAP_ANY))
+    if not backend_candidates:
+        backend_candidates.append(None)
+
+    tried: list[str] = []
+    for source in source_candidates:
+        for backend in backend_candidates:
+            try:
+                capture = cv2.VideoCapture(source) if backend is None else cv2.VideoCapture(source, backend)
+            except Exception:
+                continue
+
+            if not capture.isOpened():
+                capture.release()
+                tried.append(f"{source}@{backend}")
+                continue
+
+            capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERA_WIDTH))
+            capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERA_HEIGHT))
+            capture.set(cv2.CAP_PROP_FPS, float(CAMERA_CAPTURE_FPS))
+            with suppress(Exception):
+                capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
+            for _ in range(12):
+                ok, frame = capture.read()
+                if ok and frame is not None:
+                    return capture, str(source)
+                time.sleep(0.03)
+
+            capture.release()
+            tried.append(f"{source}@{backend}")
+
+    tried_text = ", ".join(tried) if tried else str(source_value)
+    raise RuntimeError(f"Cannot open readable server camera stream: {camera_device} (tried: {tried_text})")
 
 
 def _read_camera_frame_jpeg(capture: Any) -> tuple[bytes, int, int] | None:
     if cv2 is None:
         return None
 
-    ok, frame = capture.read()
-    if not ok or frame is None:
+    frame = None
+    for _ in range(3):
+        ok, maybe_frame = capture.read()
+        if ok and maybe_frame is not None:
+            frame = maybe_frame
+            break
+        time.sleep(0.01)
+    if frame is None:
         return None
+
+    if frame.dtype != "uint8":
+        frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX).astype("uint8")
+
+    if len(frame.shape) == 2:
+        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    elif len(frame.shape) == 3 and frame.shape[2] == 4:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
 
     height, width = frame.shape[:2]
     success, encoded = cv2.imencode(
@@ -177,7 +241,7 @@ def _read_camera_frame_jpeg(capture: Any) -> tuple[bytes, int, int] | None:
 async def _run_server_camera_stream(
     websocket: WebSocket,
     queue_ref: dict[str, LiveRequestQueue],
-    camera_device: str,
+    camera_ref: dict[str, str],
 ) -> None:
     preview_interval = 1.0 / max(CAMERA_PREVIEW_FPS, 0.2)
     model_interval = 1.0 / max(CAMERA_MODEL_FPS, 0.1)
@@ -185,11 +249,21 @@ async def _run_server_camera_stream(
     last_model_at = 0.0
     last_error = ""
     capture = None
+    camera_device = str(camera_ref.get("value", "")).strip() or CAMERA_DEVICE_DEFAULT
     source_label = camera_device
     loop = asyncio.get_running_loop()
 
     try:
         while True:
+            desired_camera = str(camera_ref.get("value", "")).strip() or CAMERA_DEVICE_DEFAULT
+            if desired_camera != camera_device:
+                camera_device = desired_camera
+                if capture is not None:
+                    with suppress(Exception):
+                        await asyncio.to_thread(capture.release)
+                    capture = None
+                await websocket.send_json({"type": "camera_info", "device": camera_device, "switching": True})
+
             if capture is None:
                 try:
                     capture, source_label = await asyncio.to_thread(_open_camera_capture, camera_device)
@@ -617,6 +691,7 @@ async def _forward_event(websocket: WebSocket, event: Any, seen_tool_signatures:
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     selected_camera = str(websocket.query_params.get("camera_device", "")).strip() or CAMERA_DEVICE_DEFAULT
+    camera_ref: dict[str, str] = {"value": selected_camera}
 
     user_id = f"user-{uuid4().hex}"
     session_ref: dict[str, str] = {"value": f"session-{uuid4().hex}"}
@@ -633,7 +708,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             "type": "session_started",
             "session_id": session_ref["value"],
             "user_id": user_id,
-            "camera_device": selected_camera,
+            "camera_device": camera_ref["value"],
         }
     )
 
@@ -645,7 +720,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         session_ref["value"],
         user_id,
         TRACE_TOOLS,
-        selected_camera,
+        camera_ref["value"],
     )
 
     async def upstream() -> None:
@@ -669,6 +744,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
 
                 if text_message is not None:
+                    try:
+                        parsed_payload = json.loads(text_message)
+                    except json.JSONDecodeError:
+                        parsed_payload = None
+
+                    if isinstance(parsed_payload, Mapping):
+                        message_type = str(parsed_payload.get("type", "")).strip()
+                        if message_type == "camera_select":
+                            next_camera = str(parsed_payload.get("camera_device", "")).strip()
+                            if next_camera:
+                                camera_ref["value"] = next_camera
+                                await websocket.send_json(
+                                    {
+                                        "type": "camera_info",
+                                        "device": next_camera,
+                                        "switching": True,
+                                    }
+                                )
+                            continue
+
                     try:
                         await _handle_text_message(text_message, queue_ref["value"])
                     except Exception:
@@ -746,14 +841,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         "type": "session_started",
                         "session_id": session_ref["value"],
                         "user_id": user_id,
-                        "camera_device": selected_camera,
+                        "camera_device": camera_ref["value"],
                     }
                 )
                 await asyncio.sleep(delay)
 
     upstream_task = asyncio.create_task(upstream())
     downstream_task = asyncio.create_task(downstream())
-    camera_task = asyncio.create_task(_run_server_camera_stream(websocket, queue_ref, selected_camera))
+    camera_task = asyncio.create_task(_run_server_camera_stream(websocket, queue_ref, camera_ref))
 
     done, pending = await asyncio.wait(
         {upstream_task, downstream_task, camera_task},

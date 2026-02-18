@@ -271,6 +271,16 @@ function handleJsonMessage(rawJson) {
   if (type === "session_started") {
     const camera = String(message.camera_device || "").trim();
     const cameraText = camera ? `, camera=${camera}` : "";
+    if (camera) {
+      const hasOption = Array.from(cameraSelect.options).some((option) => option.value === camera);
+      if (!hasOption) {
+        const option = document.createElement("option");
+        option.value = camera;
+        option.textContent = camera;
+        cameraSelect.appendChild(option);
+      }
+      cameraSelect.value = camera;
+    }
     appendLog(`Session started: ${message.session_id}${cameraText}`);
     return;
   }
@@ -278,7 +288,8 @@ function handleJsonMessage(rawJson) {
   if (type === "camera_info") {
     const device = String(message.device || "").trim();
     if (device) {
-      appendLog(`Server camera active: ${device}`);
+      const switching = Boolean(message.switching);
+      appendLog(`${switching ? "Switching server camera" : "Server camera active"}: ${device}`);
     }
     return;
   }
@@ -501,8 +512,17 @@ textInput.addEventListener("keydown", (event) => {
 });
 
 cameraSelect.addEventListener("change", () => {
+  const selectedCamera = cameraSelect.value.trim();
+  if (!selectedCamera) {
+    return;
+  }
   if (ws && ws.readyState === WebSocket.OPEN) {
-    appendLog("Reconnect to apply selected server camera");
+    ws.send(
+      JSON.stringify({
+        type: "camera_select",
+        camera_device: selectedCamera,
+      })
+    );
   }
 });
 
