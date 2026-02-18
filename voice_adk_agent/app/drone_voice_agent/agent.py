@@ -71,6 +71,14 @@ STATUS_QUERY_PATTERNS = [
     r"\btell me\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
     r"\bdrone\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
 ]
+VISION_QUERY_PATTERNS = [
+    r"\bwhat\s+(do|can)\s+you\s+see\b",
+    r"\b(can|could)\s+you\s+see\b",
+    r"\bdescribe\b.*\b(scene|camera|image|video|view|surroundings)\b",
+    r"\banaly[sz]e\b.*\b(scene|camera|image|video|frame|view)\b",
+    r"\b(is there|do you see)\b.*\b(obstacle|person|people|car|tree|wall|object)\b",
+    r"\b(camera|vision|image|video|frame)\b.*\b(see|show|describe|analy[sz]e|detect|front)\b",
+]
 
 EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more"]
 NON_COMMAND_EXACT_PHRASES = {
@@ -255,6 +263,10 @@ def _contains_status_query(normalized_text: str) -> bool:
     return any(re.search(pattern, normalized_text) for pattern in STATUS_QUERY_PATTERNS)
 
 
+def _contains_vision_query(normalized_text: str) -> bool:
+    return any(re.search(pattern, normalized_text) for pattern in VISION_QUERY_PATTERNS)
+
+
 def _is_non_command_chatter(normalized_text: str) -> bool:
     if normalized_text in NON_COMMAND_EXACT_PHRASES:
         return True
@@ -383,6 +395,7 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
 
     has_action = _contains_action(normalized)
     has_status_query = _contains_status_query(normalized)
+    has_vision_query = _contains_vision_query(normalized)
     if _is_non_command_chatter(normalized):
         if pending_command:
             return {
@@ -420,6 +433,19 @@ def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str,
             "confidence": 0.7,
             "confirmation_required": False,
             "reason": "Read-only status query detected. Execute ROS MCP read tools without confirmation.",
+        }
+
+    if not has_action and has_vision_query:
+        return {
+            "decision": "answer_from_vision",
+            "command_to_execute": normalized,
+            "pending_command": pending_command,
+            "normalized_command": normalized,
+            "actionable": True,
+            "duplicate": False,
+            "confidence": 0.75,
+            "confirmation_required": bool(pending_command),
+            "reason": "Vision query detected. Analyze current live camera input only. Do not execute movement/action tools.",
         }
 
     if not has_action:
@@ -588,15 +614,17 @@ Always follow this exact workflow for every user turn:
 4. If `decision` is `duplicate_blocked`, do not call ROS tools. Ask the user to update the command or say `confirm`.
 5. If `decision` is `cancelled`, acknowledge cancellation and wait for a new command.
 6. If `decision` is `execute_readonly_query`, run only read tools to answer the query (never movement/action tools).
-7. If `decision` is `execute_pending`, execute only `command_to_execute` via ROS MCP tools.
-8. Never execute movement tools unless `decision` is `execute_pending`.
-9. After tool execution, summarize what was executed and current status in <= 2 short sentences.
+7. If `decision` is `answer_from_vision`, answer from live visual input only. Do not call movement/action tools.
+8. If `decision` is `execute_pending`, execute only `command_to_execute` via ROS MCP tools.
+9. Never execute movement tools unless `decision` is `execute_pending`.
+10. After tool execution, summarize what was executed and current status in <= 2 short sentences.
 
 Safety and UX rules:
 - Ignore filler words, stutters, and non-command chatter.
 - Always stage first, then require explicit confirmation.
 - Prefer high-level safe commands (takeoff, land, hover, rtl, move with distance/altitude).
 - For current-status questions (position, altitude, battery, pose, state), do not ask for confirm. Use read-only tools like `get_topics`, `get_topic_type`, and `subscribe_once`.
+- For camera/scene questions, respond with visual analysis only and never trigger movement/action execution.
 - For position queries on PX4, prioritize these topics in order: `/mavros/local_position/pose`, `/mavros/global_position/local`, `/mavros/global_position/global`, then similar available pose/odom topics.
 - For known PX4 actions from loaded spec, avoid extra introspection calls (for example `get_action_details`) unless a tool call fails.
 - For ROS action execution calls, always set an explicit timeout (at least 60 seconds).

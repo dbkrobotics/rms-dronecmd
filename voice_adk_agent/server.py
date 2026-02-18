@@ -60,6 +60,8 @@ TRACE_TOOLS = os.getenv("VOICE_AGENT_TRACE_TOOLS", "true").lower() not in {"0", 
 TOOL_LOG_MAX_CHARS = int(os.getenv("VOICE_AGENT_TOOL_LOG_MAX_CHARS", "900"))
 LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "4"))
 LIVE_RETRY_BACKOFF_SEC = float(os.getenv("VOICE_AGENT_LIVE_RETRY_BACKOFF_SEC", "1.0"))
+MAX_IMAGE_FRAME_BYTES = int(os.getenv("VOICE_AGENT_MAX_IMAGE_FRAME_BYTES", "200000"))
+ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 
 session_service = InMemorySessionService()
 runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
@@ -324,7 +326,10 @@ async def _handle_text_message(raw_message: str, live_request_queue: LiveRequest
     except json.JSONDecodeError:
         payload = {"type": "text", "text": raw_message}
 
-    message_type = payload.get("type")
+    if not isinstance(payload, Mapping):
+        return
+
+    message_type = str(payload.get("type", "")).strip()
 
     if message_type == "text":
         text = str(payload.get("text", "")).strip()
@@ -335,6 +340,34 @@ async def _handle_text_message(raw_message: str, live_request_queue: LiveRequest
                     parts=[types.Part(text=text)],
                 )
             )
+        return
+
+    if message_type == "video_frame":
+        mime_type = str(payload.get("mime_type", "image/jpeg")).strip().lower()
+        if mime_type not in ALLOWED_IMAGE_MIME_TYPES:
+            return
+
+        encoded_data = payload.get("data")
+        if not isinstance(encoded_data, str) or not encoded_data:
+            return
+
+        try:
+            frame_bytes = base64.b64decode(encoded_data, validate=True)
+        except Exception:
+            return
+
+        if not frame_bytes or len(frame_bytes) > MAX_IMAGE_FRAME_BYTES:
+            return
+
+        if mime_type == "image/jpg":
+            mime_type = "image/jpeg"
+
+        live_request_queue.send_realtime(
+            types.Blob(
+                mime_type=mime_type,
+                data=frame_bytes,
+            )
+        )
 
 
 async def _forward_event(websocket: WebSocket, event: Any, seen_tool_signatures: set[str]) -> None:

@@ -124,6 +124,29 @@
         font-size: 15px;
       }
 
+      select {
+        border: 1px solid var(--border);
+        background: #0f1620;
+        color: var(--text);
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 14px;
+      }
+
+      .camera-wrap {
+        display: grid;
+        gap: 10px;
+      }
+
+      .camera-preview {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #000;
+        object-fit: cover;
+      }
+
       .transcript-box {
         min-height: 84px;
         border: 1px solid var(--border);
@@ -188,6 +211,15 @@
         <button id="startMicBtn" class="primary" disabled>Start Mic</button>
         <button id="stopMicBtn" class="warn" disabled>Stop Mic</button>
         <button id="clearAudioBtn" disabled>Clear Playback Queue</button>
+      </section>
+
+      <section class="panel camera-wrap">
+        <div class="row">
+          <div class="label">Camera Preview (Live Vision Input)</div>
+          <select id="cameraSelect" aria-label="Camera Device"></select>
+          <button id="refreshCameraBtn">Refresh Cameras</button>
+        </div>
+        <video id="cameraPreview" class="camera-preview" autoplay muted playsinline></video>
       </section>
 
       <section class="panel">

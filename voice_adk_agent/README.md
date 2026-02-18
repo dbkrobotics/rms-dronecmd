@@ -1,23 +1,22 @@
-# Voice ADK Agent (Independent from `voice_hooks`)
-
-This folder provides a new real-time voice control stack based on **Google ADK streaming**.
-It does **not** change or depend on `voice_hooks`.
+# Voice ADK Agent
 
 ## Goal
 
 - Human speaks to a real-time voice agent.
-- The agent directly uses `ros-mcp-server` tools via MCP stdio (preferred path).
-- Noise, filler words, and accidental immediate duplicates are filtered before execution.
+- Browser camera streams live vision frames to the same agent session.
+- The agent uses `ros-mcp-server` tools via MCP.
+- Noise, filler words, and accidental duplicates are filtered before execution.
 - Every command is staged first and is executed only after explicit `confirm`.
 
 ## Architecture
 
 1. Browser captures microphone audio (`16kHz PCM`) and sends it via WebSocket.
-2. `server.py` forwards audio to ADK `Runner.run_live(...)` in `BIDI` streaming mode.
-3. ADK agent (`app/drone_voice_agent/agent.py`) calls:
+2. Browser also captures camera frames (`JPEG`, resized/compressed, no file save) and streams them via WebSocket.
+3. `server.py` forwards audio + camera frames to ADK `Runner.run_live(...)` in `BIDI` streaming mode.
+4. ADK agent (`app/drone_voice_agent/agent.py`) calls:
 - `sanitize_voice_command` (guardrail tool)
 - ROS MCP tools (through `McpToolset` + `StdioConnectionParams`)
-4. Assistant audio (`24kHz PCM`) streams back to browser and plays in near real time.
+5. Assistant audio (`24kHz PCM`) streams back to browser and plays in near real time.
 
 ## Files
 
@@ -45,6 +44,7 @@ Edit `.env`:
 - Optional: set `ROS_MCP_ROBOT_SPEC_PATH` to force-load `drone_px4.yaml` context
 - Default behavior redirects noisy ROS MCP stderr logs to `/tmp/ros_mcp_server_stderr.log`
 - Optional: tune third-party SDK log verbosity with `VOICE_AGENT_THIRD_PARTY_LOG_LEVEL` (default: `CRITICAL`)
+- Optional: tune camera frame guard with `VOICE_AGENT_MAX_IMAGE_FRAME_BYTES` (default: `200000`)
 
 ## Run (ngrok only)
 
@@ -62,9 +62,10 @@ Open either:
 Then:
 
 1. Click `Connect`
-2. Click `Start Mic`
-3. Speak a command
-4. Say `confirm` to execute (say `cancel` to discard)
+2. Camera preview should appear automatically when the page opens
+3. Click `Start Mic`
+4. Speak a command
+5. Say `confirm` to execute (say `cancel` to discard)
 
 ## Notes
 
@@ -73,6 +74,8 @@ Then:
 - The guardrail currently blocks immediate duplicate commands within `VOICE_AGENT_DUPLICATE_WINDOW_SEC`.
 - Execution safety: commands are queued and require explicit `confirm`.
 - Read-only status queries (position/altitude/battery/state) run without confirmation using ROS MCP read tools.
+- Camera/vision queries are analysis-only (no movement execution) and use the live streamed view.
+- Vision stream defaults are lightweight (`640x360`, JPEG quality `0.55`, every `500ms`) to keep latency and payload size bounded.
 - Tool observability: terminal now prints `TOOL_CALL` / `TOOL_RESULT` traces, and the web UI event log shows the same.
 - If needed, inspect low-level ROS MCP stderr in `/tmp/ros_mcp_server_stderr.log`.
 - Optional retry for transient live model drops is controlled by `VOICE_AGENT_LIVE_RETRY_COUNT` (default: `4`).
