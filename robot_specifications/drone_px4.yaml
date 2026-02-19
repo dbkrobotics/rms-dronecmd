@@ -47,6 +47,13 @@ prompts: |
        - `bool success`
        - `bool found`
        - `float32 confidence`
+       - `int32 image_width`
+       - `int32 image_height`
+       - `int32 bbox_x`
+       - `int32 bbox_y`
+       - `int32 bbox_w`
+       - `int32 bbox_h`
+       - `string matched_label`
        - `float32 depth_m`
        - `float32 distance_m`
        - `geometry_msgs/Point world_position`

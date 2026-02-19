@@ -14,5 +14,12 @@ float32 depth_uncertainty_m
 float32 distance_m
 int32 pixel_u
 int32 pixel_v
+int32 image_width
+int32 image_height
+int32 bbox_x
+int32 bbox_y
+int32 bbox_w
+int32 bbox_h
+string matched_label
 geometry_msgs/Point world_position
 string world_frame

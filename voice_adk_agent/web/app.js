@@ -32,6 +32,9 @@ let nextPlaybackTime = 0;
 const activePlaybackSources = new Set();
 let suppressMicUntilMs = 0;
 let plannedTrajectoryPoints = [];
+let detectedObjectBox = null;
+let previewFrameWidth = 0;
+let previewFrameHeight = 0;
 
 function setStatus(text, level) {
   connectionStatus.textContent = text;
@@ -74,6 +77,41 @@ function normalizeTrajectoryPoints(rawPoints) {
     .filter((point) => isFiniteNumber(point.x) && isFiniteNumber(point.y) && isFiniteNumber(point.z));
 }
 
+function normalizeDetectionBox(rawPayload) {
+  if (!rawPayload || typeof rawPayload !== "object") {
+    return null;
+  }
+
+  if (rawPayload.found === false) {
+    return null;
+  }
+
+  const rawBox = rawPayload.bbox && typeof rawPayload.bbox === "object" ? rawPayload.bbox : rawPayload;
+  const x = Number(rawBox.x);
+  const y = Number(rawBox.y);
+  const w = Number(rawBox.w);
+  const h = Number(rawBox.h);
+  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) {
+    return null;
+  }
+
+  const imageWidth = Number(rawPayload.image_width ?? rawPayload.imageWidth);
+  const imageHeight = Number(rawPayload.image_height ?? rawPayload.imageHeight);
+  const confidence = Number(rawPayload.confidence);
+  const label = String(rawPayload.label || "").trim();
+
+  return {
+    x,
+    y,
+    w,
+    h,
+    imageWidth: Number.isFinite(imageWidth) && imageWidth > 0 ? imageWidth : 0,
+    imageHeight: Number.isFinite(imageHeight) && imageHeight > 0 ? imageHeight : 0,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    label,
+  };
+}
+
 function resizeTrajectoryOverlay() {
   if (!trajectoryOverlay || !cameraPreview) {
     return;
@@ -102,60 +140,96 @@ function drawPlannedTrajectory() {
   const height = trajectoryOverlay.height;
   ctx.clearRect(0, 0, width, height);
 
-  if (!plannedTrajectoryPoints.length) {
-    return;
+  if (plannedTrajectoryPoints.length) {
+    const xs = plannedTrajectoryPoints.map((point) => point.x);
+    const ys = plannedTrajectoryPoints.map((point) => point.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+
+    const pad = 24;
+    const spanX = Math.max(1e-6, maxX - minX);
+    const spanY = Math.max(1e-6, maxY - minY);
+    const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
+    const centerX = (minX + maxX) * 0.5;
+    const centerY = (minY + maxY) * 0.5;
+
+    const project = (point) => ({
+      x: (point.x - centerX) * scale + width * 0.5,
+      y: height * 0.5 - (point.y - centerY) * scale,
+    });
+
+    ctx.strokeStyle = "#43a9ff";
+    ctx.lineWidth = 3;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    plannedTrajectoryPoints.forEach((point, index) => {
+      const p = project(point);
+      if (index === 0) {
+        ctx.moveTo(p.x, p.y);
+      } else {
+        ctx.lineTo(p.x, p.y);
+      }
+    });
+    ctx.stroke();
+
+    const start = project(plannedTrajectoryPoints[0]);
+    const end = project(plannedTrajectoryPoints[plannedTrajectoryPoints.length - 1]);
+
+    ctx.fillStyle = "#37d67a";
+    ctx.beginPath();
+    ctx.arc(start.x, start.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#ff5f6d";
+    ctx.beginPath();
+    ctx.arc(end.x, end.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#e6edf7";
+    ctx.font = "12px Inter, system-ui, sans-serif";
+    ctx.fillText(`Planned trajectory (${plannedTrajectoryPoints.length} wp)`, 10, 18);
   }
 
-  const xs = plannedTrajectoryPoints.map((point) => point.x);
-  const ys = plannedTrajectoryPoints.map((point) => point.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  if (detectedObjectBox) {
+    const sourceWidth =
+      detectedObjectBox.imageWidth > 0 ? detectedObjectBox.imageWidth : previewFrameWidth || width;
+    const sourceHeight =
+      detectedObjectBox.imageHeight > 0 ? detectedObjectBox.imageHeight : previewFrameHeight || height;
+    const scale = Math.max(width / sourceWidth, height / sourceHeight);
+    const renderedWidth = sourceWidth * scale;
+    const renderedHeight = sourceHeight * scale;
+    const offsetX = (width - renderedWidth) * 0.5;
+    const offsetY = (height - renderedHeight) * 0.5;
 
-  const pad = 24;
-  const spanX = Math.max(1e-6, maxX - minX);
-  const spanY = Math.max(1e-6, maxY - minY);
-  const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
-  const centerX = (minX + maxX) * 0.5;
-  const centerY = (minY + maxY) * 0.5;
+    const x = offsetX + detectedObjectBox.x * scale;
+    const y = offsetY + detectedObjectBox.y * scale;
+    const w = detectedObjectBox.w * scale;
+    const h = detectedObjectBox.h * scale;
 
-  const project = (point) => ({
-    x: (point.x - centerX) * scale + width * 0.5,
-    y: height * 0.5 - (point.y - centerY) * scale,
-  });
+    ctx.strokeStyle = "#ffd166";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x, y, w, h);
 
-  ctx.strokeStyle = "#43a9ff";
-  ctx.lineWidth = 3;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  plannedTrajectoryPoints.forEach((point, index) => {
-    const p = project(point);
-    if (index === 0) {
-      ctx.moveTo(p.x, p.y);
-    } else {
-      ctx.lineTo(p.x, p.y);
-    }
-  });
-  ctx.stroke();
+    const confidenceText =
+      detectedObjectBox.confidence === null ? "" : ` ${(detectedObjectBox.confidence * 100).toFixed(1)}%`;
+    const labelText = `${detectedObjectBox.label || "object"}${confidenceText}`;
 
-  const start = project(plannedTrajectoryPoints[0]);
-  const end = project(plannedTrajectoryPoints[plannedTrajectoryPoints.length - 1]);
+    ctx.font = "12px Inter, system-ui, sans-serif";
+    const textWidth = ctx.measureText(labelText).width;
+    const textPadX = 6;
+    const textPadY = 4;
+    const textHeight = 16;
+    const labelX = Math.max(0, x);
+    const labelY = Math.max(0, y - textHeight - 2);
 
-  ctx.fillStyle = "#37d67a";
-  ctx.beginPath();
-  ctx.arc(start.x, start.y, 5, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#ff5f6d";
-  ctx.beginPath();
-  ctx.arc(end.x, end.y, 5, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = "#e6edf7";
-  ctx.font = "12px Inter, system-ui, sans-serif";
-  ctx.fillText(`Planned trajectory (${plannedTrajectoryPoints.length} wp)`, 10, 18);
+    ctx.fillStyle = "rgba(255, 209, 102, 0.95)";
+    ctx.fillRect(labelX, labelY, textWidth + textPadX * 2, textHeight);
+    ctx.fillStyle = "#0f141b";
+    ctx.fillText(labelText, labelX + textPadX, labelY + textHeight - textPadY);
+  }
 }
 
 function setPlannedTrajectory(rawPoints) {
@@ -163,6 +237,25 @@ function setPlannedTrajectory(rawPoints) {
   drawPlannedTrajectory();
   if (plannedTrajectoryPoints.length) {
     appendLog(`Planned trajectory updated: ${plannedTrajectoryPoints.length} waypoint(s)`);
+  }
+}
+
+function setDetectionBox(rawPayload) {
+  const hadBox = Boolean(detectedObjectBox);
+  if (rawPayload && rawPayload.found === false) {
+    detectedObjectBox = null;
+    drawPlannedTrajectory();
+    if (hadBox) {
+      appendLog("Detection cleared (target not found)");
+    }
+    return;
+  }
+
+  detectedObjectBox = normalizeDetectionBox(rawPayload);
+  drawPlannedTrajectory();
+  if (detectedObjectBox) {
+    const label = detectedObjectBox.label || "object";
+    appendLog(`Detection bbox updated: ${label}`);
   }
 }
 
@@ -381,6 +474,7 @@ function disconnectWebSocket() {
 
   ws.close();
   setPlannedTrajectory([]);
+  setDetectionBox({ found: false });
 }
 
 function handleJsonMessage(rawJson) {
@@ -397,6 +491,7 @@ function handleJsonMessage(rawJson) {
     const camera = String(message.camera_device || "").trim();
     const cameraText = camera ? `, camera=${camera}` : "";
     setPlannedTrajectory([]);
+    setDetectionBox({ found: false });
     if (camera) {
       const hasOption = Array.from(cameraSelect.options).some((option) => option.value === camera);
       if (!hasOption) {
@@ -415,6 +510,9 @@ function handleJsonMessage(rawJson) {
     const device = String(message.device || "").trim();
     if (device) {
       const switching = Boolean(message.switching);
+      if (switching) {
+        setDetectionBox({ found: false });
+      }
       appendLog(`${switching ? "Switching server camera" : "Server camera active"}: ${device}`);
     }
     return;
@@ -428,6 +526,14 @@ function handleJsonMessage(rawJson) {
   if (type === "camera_preview") {
     const mimeType = String(message.mime_type || "image/jpeg").trim();
     const data = String(message.data || "").trim();
+    const width = Number(message.width);
+    const height = Number(message.height);
+    if (Number.isFinite(width) && width > 0) {
+      previewFrameWidth = width;
+    }
+    if (Number.isFinite(height) && height > 0) {
+      previewFrameHeight = height;
+    }
     if (data) {
       cameraPreview.src = `data:${mimeType};base64,${data}`;
     }
@@ -479,6 +585,11 @@ function handleJsonMessage(rawJson) {
 
   if (type === "planned_trajectory") {
     setPlannedTrajectory(message.points);
+    return;
+  }
+
+  if (type === "detection_bbox") {
+    setDetectionBox(message);
     return;
   }
 

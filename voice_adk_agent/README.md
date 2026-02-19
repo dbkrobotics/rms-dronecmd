@@ -17,7 +17,7 @@
    - `confirm_gate` (state-only confirm/cancel gate)
    - `compute_standoff_waypoint` (deterministic waypoint helper)
    - ROS MCP tools (actions/services/topics)
-5. Browser receives assistant audio and camera preview.
+5. Browser receives assistant audio, camera preview, planned trajectory, and latest detection bbox overlay.
 
 ## Important Behavior
 

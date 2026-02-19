@@ -669,6 +669,17 @@ class ObjectLocatorNode(Node):
         target_query = str(request.target_query or "").strip()
         world_frame = str(request.world_frame or self.default_world_frame).strip() or self.default_world_frame
         response.world_frame = world_frame
+        response.found = False
+        response.confidence = 0.0
+        response.pixel_u = 0
+        response.pixel_v = 0
+        response.image_width = 0
+        response.image_height = 0
+        response.bbox_x = 0
+        response.bbox_y = 0
+        response.bbox_w = 0
+        response.bbox_h = 0
+        response.matched_label = ""
 
         if not target_query:
             response.success = False
@@ -682,6 +693,9 @@ class ObjectLocatorNode(Node):
                 response.success = False
                 response.message = f"cannot read camera frame from {self.camera_device}"
                 return response
+            frame_h, frame_w = frame.shape[:2]
+            response.image_width = int(frame_w)
+            response.image_height = int(frame_h)
             response.success = True
             response.found = False
             response.message = f"target '{target_query}' not found"
@@ -703,6 +717,13 @@ class ObjectLocatorNode(Node):
         response.confidence = float(confidence)
         response.pixel_u = int(u)
         response.pixel_v = int(v)
+        response.image_width = int(frame_w)
+        response.image_height = int(frame_h)
+        response.bbox_x = int(x)
+        response.bbox_y = int(y)
+        response.bbox_w = int(w)
+        response.bbox_h = int(h)
+        response.matched_label = str(matched_label)
 
         depth_map = self._run_depth(frame)
         if depth_map is None:

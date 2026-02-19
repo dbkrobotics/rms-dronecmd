@@ -193,12 +193,11 @@ def compute_standoff_waypoint(
     target_x: float,
     target_y: float,
     target_z: float,
-    standoff_m: float = 1.0,
+    standoff_m: float = 0.5,
     min_altitude_m: float = 0.5,
-    max_altitude_m: float = 5.0,
+    max_altitude_m: float = 2.0,
     keep_target_altitude: bool = True,
 ) -> dict[str, Any]:
-    """Compute a waypoint that stops `standoff_m` before the target along line-of-sight."""
 
     standoff = max(0.0, float(standoff_m))
     min_alt = float(min_altitude_m)

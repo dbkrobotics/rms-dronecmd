@@ -520,6 +520,13 @@ def _to_float(value: Any) -> float | None:
     return number
 
 
+def _to_int(value: Any) -> int | None:
+    number = _to_float(value)
+    if number is None:
+        return None
+    return int(round(number))
+
+
 def _point_from_mapping(value: Any) -> dict[str, float] | None:
     if not isinstance(value, Mapping):
         return None
@@ -591,6 +598,92 @@ def _extract_planned_trajectory(tool_name: str, payload: Any) -> dict[str, Any] 
         "source": tool_name,
         "points": points[:200],
     }
+
+
+def _find_object_detection_result(value: Any, depth: int = 0) -> Mapping[str, Any] | None:
+    if depth > 7:
+        return None
+
+    if isinstance(value, Mapping):
+        has_found = "found" in value
+        has_pixel = "pixel_u" in value and "pixel_v" in value
+        has_bbox = all(key in value for key in ("bbox_x", "bbox_y", "bbox_w", "bbox_h"))
+        if has_found and (has_pixel or has_bbox):
+            return value
+
+        for nested in value.values():
+            found = _find_object_detection_result(nested, depth + 1)
+            if found is not None:
+                return found
+        return None
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
+        for nested in value:
+            found = _find_object_detection_result(nested, depth + 1)
+            if found is not None:
+                return found
+
+    return None
+
+
+def _extract_detection_bbox_event(tool_name: str, payload: Any) -> dict[str, Any] | None:
+    plain_payload = _plain(payload)
+    result = _find_object_detection_result(plain_payload)
+    if result is None:
+        return None
+
+    event: dict[str, Any] = {
+        "source": tool_name,
+        "found": bool(result.get("found")),
+    }
+    if not event["found"]:
+        return event
+
+    bbox_x = _to_int(result.get("bbox_x"))
+    bbox_y = _to_int(result.get("bbox_y"))
+    bbox_w = _to_int(result.get("bbox_w"))
+    bbox_h = _to_int(result.get("bbox_h"))
+
+    if (
+        bbox_x is None
+        or bbox_y is None
+        or bbox_w is None
+        or bbox_h is None
+        or bbox_w <= 0
+        or bbox_h <= 0
+    ):
+        pixel_u = _to_int(result.get("pixel_u"))
+        pixel_v = _to_int(result.get("pixel_v"))
+        if pixel_u is None or pixel_v is None:
+            return event
+        bbox_x = max(0, pixel_u - 12)
+        bbox_y = max(0, pixel_v - 12)
+        bbox_w = 24
+        bbox_h = 24
+
+    event["bbox"] = {
+        "x": int(bbox_x),
+        "y": int(bbox_y),
+        "w": int(max(1, bbox_w)),
+        "h": int(max(1, bbox_h)),
+    }
+
+    image_width = _to_int(result.get("image_width"))
+    image_height = _to_int(result.get("image_height"))
+    if image_width is not None and image_width > 0:
+        event["image_width"] = int(image_width)
+    if image_height is not None and image_height > 0:
+        event["image_height"] = int(image_height)
+
+    confidence = _to_float(result.get("confidence"))
+    if confidence is not None:
+        event["confidence"] = float(max(0.0, min(1.0, confidence)))
+
+    matched_label = str(result.get("matched_label", "")).strip()
+    if matched_label:
+        event["label"] = matched_label
+
+    return event
 
 
 def _extract_tool_activity_from_part(part: Any) -> list[dict[str, Any]]:
@@ -683,6 +776,20 @@ async def _emit_tool_activity(
     websocket: WebSocket, activities: list[dict[str, Any]], seen_signatures: set[str]
 ) -> None:
     for item in activities:
+        detection_event = None
+        if item["kind"] == "tool_result":
+            detection_event = _extract_detection_bbox_event(item["name"], item["payload"])
+        if detection_event is not None:
+            detection_signature = f"detection_bbox::{_compact(detection_event)}"
+            if detection_signature not in seen_signatures:
+                seen_signatures.add(detection_signature)
+                await websocket.send_json(
+                    {
+                        "type": "detection_bbox",
+                        **detection_event,
+                    }
+                )
+
         trajectory = _extract_planned_trajectory(item["name"], item["payload"])
         if trajectory is not None:
             trajectory_signature = f"planned_trajectory::{_compact(trajectory['points'])}"
