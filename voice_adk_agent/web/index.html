@@ -138,13 +138,29 @@
         gap: 10px;
       }
 
-      .camera-preview {
+      .camera-frame {
+        position: relative;
         width: 100%;
         aspect-ratio: 16 / 9;
         border: 1px solid var(--border);
         border-radius: 10px;
         background: #000;
+        overflow: hidden;
+      }
+
+      .camera-preview {
+        width: 100%;
+        height: 100%;
         object-fit: cover;
+        display: block;
+      }
+
+      .trajectory-overlay {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
       }
 
       .transcript-box {
@@ -219,7 +235,10 @@
           <select id="cameraSelect" aria-label="Camera Device"></select>
           <button id="refreshCameraBtn">Refresh Cameras</button>
         </div>
-        <img id="cameraPreview" class="camera-preview" alt="Server camera preview" />
+        <div class="camera-frame">
+          <img id="cameraPreview" class="camera-preview" alt="Server camera preview" />
+          <canvas id="trajectoryOverlay" class="trajectory-overlay"></canvas>
+        </div>
       </section>
 
       <section class="panel">

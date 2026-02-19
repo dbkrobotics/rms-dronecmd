@@ -32,6 +32,13 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
+### 1-1. Install Visual AI Dependencies (CPU Open-Vocabulary)
+```bash
+# Install in the Python environment used for drone_controller runtime
+pip install --upgrade pip
+pip install ultralytics transformers pillow torch
+```
+
 ### 2. Connect to Flight Controller
 Ensure your companion computer is connected to the Flight Controller (Pixhawk)
 
@@ -46,7 +53,7 @@ Start the MAVROS node to bridge MAVLink to ROS2 topics.
 ```bash
 # Example: USB/Serial connection
 # Adjust fcu_url based on your device path and baudrate
-ros2 launch mavros px4.launch fcu_url:="ros2 launch mavros px4.launch fcu_url:="serial:///dev/ttyUSB0:921600" gcs_url:="udp://@127.0.0.1"
+ros2 launch mavros px4.launch fcu_url:="serial:///dev/ttyUSB0:921600" gcs_url:="udp://@127.0.0.1"
 ```
 
 ### 4. Launch the Control Node
@@ -54,6 +61,15 @@ ros2 launch mavros px4.launch fcu_url:="ros2 launch mavros px4.launch fcu_url:="
 # In the drone_ws folder
 source install/setup.bash
 ros2 run drone_controller bridge
+```
+
+### 4-1. (Optional) Launch Object Locator Node (RGB camera)
+```bash
+# In the drone_ws folder
+source install/setup.bash
+export DRONE_DETECTOR_MODEL_ID=yolov8s-worldv2.pt
+export DRONE_DEPTH_MODEL_ID=depth-anything/Depth-Anything-V2-Small-hf
+ros2 run drone_controller object_locator --ros-args -p camera_device:=/dev/video0
 ```
 
 ### 4. (Optional) Launch Motion Capture Node

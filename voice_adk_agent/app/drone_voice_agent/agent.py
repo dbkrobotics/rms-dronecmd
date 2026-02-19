@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
-import threading
 import time
 from pathlib import Path
 from textwrap import dedent
@@ -19,87 +19,7 @@ from mcp import StdioServerParameters
 load_dotenv()
 logger = logging.getLogger("voice_adk_agent.agent")
 
-_FALLBACK_LOCK = threading.RLock()
-_STAGED_BY_CONTEXT: dict[str, tuple[str, float]] = {}
-ASR_REWRITE_MAP = {
-    "petition": "position",
-    "metre": "meter",
-    "metres": "meters",
-}
-
-FILLER_WORDS = {
-    "uh",
-    "um",
-    "hmm",
-    "like",
-    "please",
-    "just",
-    "kind",
-    "sort",
-    "you",
-    "know",
-    "assistant",
-    "gemini",
-    "drone",
-}
-
-ACTION_PATTERNS = [
-    r"\btake\s*off\b",
-    r"\bland\b",
-    r"\barm\b",
-    r"\bdisarm\b",
-    r"\bhover\b",
-    r"\breturn\s*to\s*launch\b",
-    r"\breturn\s*home\b",
-    r"\brtl\b",
-    r"\bmove\b",
-    r"\bgo\b",
-    r"\bforward\b",
-    r"\bbackward\b",
-    r"\bleft\b",
-    r"\bright\b",
-    r"\bup\b",
-    r"\bdown\b",
-    r"\bturn\b",
-    r"\brotate\b",
-    r"\bcircle\b",
-    r"\bsquare\b",
-]
-STATUS_QUERY_PATTERNS = [
-    r"\b(current|latest|now)\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
-    r"\b(where|what)\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
-    r"\btell me\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
-    r"\bdrone\b.*\b(position|location|coordinate|pose|altitude|battery|status|state)\b",
-]
-VISION_QUERY_PATTERNS = [
-    r"\bwhat\s+(do|can)\s+you\s+see\b",
-    r"\b(can|could)\s+you\s+see\b",
-    r"\bdescribe\b.*\b(scene|camera|image|video|view|surroundings)\b",
-    r"\banaly[sz]e\b.*\b(scene|camera|image|video|frame|view)\b",
-    r"\b(is there|do you see)\b.*\b(obstacle|person|people|car|tree|wall|object)\b",
-    r"\b(camera|vision|image|video|frame)\b.*\b(see|show|describe|analy[sz]e|detect|front)\b",
-]
-
-EXPLICIT_REPEAT_PATTERNS = ["again", "repeat", "one more"]
-NON_COMMAND_EXACT_PHRASES = {
-    "command staged",
-    "staged command",
-    "i m sorry",
-    "sorry",
-    "okay",
-    "ok",
-    "thanks",
-    "thank you",
-}
-NON_COMMAND_PATTERNS = [
-    r"\bask user to say confirm\b",
-    r"\bdo not execute yet\b",
-    r"\bconfirmation accepted\b",
-    r"\bno staged command\b",
-    r"\bstaged command was cancelled\b",
-    r"\bwaiting for\b.*\bconfirm\b",
-]
-CONFIRM_PHRASES = {
+_CONFIRM_PHRASES = {
     "confirm",
     "confirm it",
     "execute",
@@ -108,418 +28,221 @@ CONFIRM_PHRASES = {
     "run it",
     "do it",
     "go ahead",
-    "thats correct",
-    "that is correct",
+    "approved",
 }
-CANCEL_KEYWORDS = {
+
+_CANCEL_PHRASES = {
     "cancel",
     "discard",
     "never mind",
-    "start over",
     "drop it",
+    "stop",
 }
 
 
-def _env_float(name: str, default: float, minimum: float) -> float:
-    raw = os.getenv(name, str(default))
+def _normalize_phrase(text: str) -> str:
+    normalized = text.lower().strip()
+    normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized
+
+
+def _is_confirm_phrase(text: str) -> bool:
+    return _normalize_phrase(text) in _CONFIRM_PHRASES
+
+
+def _is_cancel_phrase(text: str) -> bool:
+    normalized = _normalize_phrase(text)
+    if normalized in _CANCEL_PHRASES:
+        return True
+    return any(token in normalized for token in _CANCEL_PHRASES)
+
+
+def _confirm_timeout_sec() -> float:
+    raw = os.getenv("VOICE_AGENT_CONFIRM_TIMEOUT_SEC", "45")
     try:
         value = float(raw)
     except Exception:
-        return default
-    return value if value >= minimum else default
+        value = 45.0
+    return max(3.0, value)
 
 
-def _context_keys(tool_context: ToolContext) -> list[str]:
-    keys: list[str] = []
-
-    def add_key(value: Any, prefix: str) -> None:
-        if value:
-            key = f"{prefix}:{value}"
-            if key not in keys:
-                keys.append(key)
-
-    for attr in ("user_id", "session_id", "invocation_id"):
-        add_key(getattr(tool_context, attr, None), attr)
-
-    nested = getattr(tool_context, "invocation_context", None) or getattr(
-        tool_context, "_invocation_context", None
-    )
-    if nested is not None:
-        for attr in ("user_id", "session_id", "id"):
-            add_key(getattr(nested, attr, None), f"nested-{attr}")
-
-        session = getattr(nested, "session", None)
-        if session is not None:
-            sid = getattr(session, "session_id", None) or getattr(session, "id", None)
-            add_key(sid, "session")
-
-    keys.append("default")
-    return keys
+def _clear_pending(state: Any) -> None:
+    state["pending_execution_payload"] = ""
+    state["pending_execution_ts"] = 0.0
 
 
-def _set_fallback_staged(context_keys: list[str], command: str, timestamp: float) -> None:
-    with _FALLBACK_LOCK:
-        for context_key in context_keys:
-            _STAGED_BY_CONTEXT[context_key] = (command, timestamp)
+def _get_pending(state: Any) -> tuple[str, float]:
+    payload = str(state.get("pending_execution_payload", "") or "")
+    ts = float(state.get("pending_execution_ts", 0.0) or 0.0)
+    return payload, ts
 
 
-def _get_fallback_staged(context_keys: list[str]) -> tuple[str, float]:
-    best_command = ""
-    best_ts = 0.0
-    with _FALLBACK_LOCK:
-        for context_key in context_keys:
-            command, ts = _STAGED_BY_CONTEXT.get(context_key, ("", 0.0))
-            if command and ts > best_ts:
-                best_command = command
-                best_ts = ts
-    return best_command, best_ts
+def confirm_gate(
+    user_utterance: str,
+    requires_confirmation: bool,
+    execution_payload: str = "",
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
 
+    if tool_context is None:
+        return {
+            "decision": "error",
+            "reason": "tool_context is required",
+            "command_to_execute": "",
+            "pending_command": "",
+        }
 
-def _clear_fallback_staged(context_keys: list[str]) -> None:
-    with _FALLBACK_LOCK:
-        for context_key in context_keys:
-            _STAGED_BY_CONTEXT.pop(context_key, None)
-
-
-def _collapse_adjacent_duplicates(tokens: list[str]) -> list[str]:
-    if not tokens:
-        return tokens
-
-    collapsed = [tokens[0]]
-    for token in tokens[1:]:
-        prev = collapsed[-1]
-        if token == prev and re.fullmatch(r"[xyz]?-?\d+(?:\.\d+)?", token):
-            collapsed.append(token)
-            continue
-        if token != prev:
-            collapsed.append(token)
-    return collapsed
-
-
-def _collapse_duplicate_bigrams(tokens: list[str]) -> list[str]:
-    if len(tokens) < 4:
-        return tokens
-
-    cleaned: list[str] = []
-    i = 0
-    while i < len(tokens):
-        if i + 3 < len(tokens) and tokens[i : i + 2] == tokens[i + 2 : i + 4]:
-            pair = tokens[i : i + 2]
-            if any(re.fullmatch(r"[xyz]?-?\d+(?:\.\d+)?", item) for item in pair):
-                cleaned.append(tokens[i])
-                i += 1
-                continue
-            cleaned.extend(tokens[i : i + 2])
-            i += 4
-            while i + 1 < len(tokens) and tokens[i : i + 2] == cleaned[-2:]:
-                i += 2
-            continue
-
-        cleaned.append(tokens[i])
-        i += 1
-
-    return cleaned
-
-
-def _normalize_text(raw_text: str) -> str:
-    lowered = raw_text.lower().strip()
-    for source, target in ASR_REWRITE_MAP.items():
-        lowered = re.sub(rf"\b{re.escape(source)}\b", target, lowered)
-    lowered = re.sub(r"```[\s\S]*?```", " ", lowered)
-    lowered = re.sub(r"[^0-9a-zA-Z/_\-\.\s]", " ", lowered)
-    lowered = re.sub(r"\s+", " ", lowered).strip()
-
-    if not lowered:
-        return ""
-
-    tokens = [token for token in lowered.split(" ") if token and token not in FILLER_WORDS]
-    tokens = _collapse_adjacent_duplicates(tokens)
-    tokens = _collapse_duplicate_bigrams(tokens)
-    return " ".join(tokens).strip()
-
-
-def _normalize_phrase_for_match(text: str) -> str:
-    cleaned = text.lower().strip()
-    cleaned = re.sub(r"[^0-9a-zA-Z\s]", " ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned
-
-
-def _clear_pending_command(state: Any) -> None:
-    state["pending_command"] = ""
-    state["pending_command_ts"] = 0.0
-
-
-def _clear_staged_backup(state: Any) -> None:
-    state["staged_command_backup"] = ""
-    state["staged_command_backup_ts"] = 0.0
-
-
-def _contains_action(normalized_text: str) -> bool:
-    return any(re.search(pattern, normalized_text) for pattern in ACTION_PATTERNS)
-
-
-def _contains_status_query(normalized_text: str) -> bool:
-    return any(re.search(pattern, normalized_text) for pattern in STATUS_QUERY_PATTERNS)
-
-
-def _contains_vision_query(normalized_text: str) -> bool:
-    return any(re.search(pattern, normalized_text) for pattern in VISION_QUERY_PATTERNS)
-
-
-def _is_non_command_chatter(normalized_text: str) -> bool:
-    if normalized_text in NON_COMMAND_EXACT_PHRASES:
-        return True
-    return any(re.search(pattern, normalized_text) for pattern in NON_COMMAND_PATTERNS)
-
-
-def _is_confirm_phrase(raw_text: str) -> bool:
-    normalized = _normalize_phrase_for_match(raw_text)
-    return normalized in CONFIRM_PHRASES
-
-
-def _is_cancel_phrase(raw_text: str) -> bool:
-    normalized = _normalize_phrase_for_match(raw_text)
-    return any(keyword in normalized for keyword in CANCEL_KEYWORDS)
-
-
-def sanitize_voice_command(command: str, tool_context: ToolContext) -> dict[str, Any]:
-
-    raw_text = (command or "").strip()
-    normalized = _normalize_text(raw_text)
     state = tool_context.state
-    context_keys = _context_keys(tool_context)
     now = time.time()
-    confirm_timeout_sec = _env_float("VOICE_AGENT_CONFIRM_TIMEOUT_SEC", 45.0, 3.0)
-    duplicate_window_sec = _env_float("VOICE_AGENT_DUPLICATE_WINDOW_SEC", 8.0, 0.0)
+    timeout_sec = _confirm_timeout_sec()
 
-    pending_command = str(state.get("pending_command", ""))
-    pending_ts = float(state.get("pending_command_ts", 0.0) or 0.0)
-    staged_backup = str(state.get("staged_command_backup", ""))
-    staged_backup_ts = float(state.get("staged_command_backup_ts", 0.0) or 0.0)
-    fallback_staged, fallback_staged_ts = _get_fallback_staged(context_keys)
-
-    if not pending_command and fallback_staged and fallback_staged_ts > 0:
-        if (now - fallback_staged_ts) <= confirm_timeout_sec:
-            pending_command = fallback_staged
-        else:
-            _clear_fallback_staged(context_keys)
-
-    if pending_command and pending_ts > 0 and (now - pending_ts) > confirm_timeout_sec:
-        _clear_pending_command(state)
+    pending_command, pending_ts = _get_pending(state)
+    if pending_command and pending_ts > 0 and (now - pending_ts) > timeout_sec:
+        _clear_pending(state)
         pending_command = ""
-        _clear_staged_backup(state)
-        staged_backup = ""
-        _clear_fallback_staged(context_keys)
 
-    if staged_backup and staged_backup_ts > 0 and (now - staged_backup_ts) > confirm_timeout_sec:
-        _clear_staged_backup(state)
-        staged_backup = ""
-        _clear_fallback_staged(context_keys)
+    utterance = (user_utterance or "").strip()
+    payload = (execution_payload or "").strip()
 
-    if _is_confirm_phrase(raw_text):
-        if not pending_command and staged_backup:
-            pending_command = staged_backup
-        if not pending_command:
-            fallback_staged, fallback_staged_ts = _get_fallback_staged(context_keys)
-            if fallback_staged and (now - fallback_staged_ts) <= confirm_timeout_sec:
-                pending_command = fallback_staged
-
+    if _is_confirm_phrase(utterance):
         if pending_command:
-            state["last_normalized_command"] = pending_command
-            state["last_normalized_command_ts"] = now
-            _clear_pending_command(state)
-            _clear_staged_backup(state)
-            _clear_fallback_staged(context_keys)
+            _clear_pending(state)
+            state["last_executed_payload"] = pending_command
+            state["last_executed_ts"] = now
             return {
                 "decision": "execute_pending",
+                "reason": "Confirmation accepted",
                 "command_to_execute": pending_command,
-                "pending_command": pending_command,
-                "normalized_command": pending_command,
-                "actionable": True,
-                "duplicate": False,
+                "pending_command": "",
                 "confirmation_required": False,
-                "reason": "Confirmation accepted. Execute the staged command now.",
             }
-
         return {
             "decision": "noop",
+            "reason": "No staged command to confirm",
             "command_to_execute": "",
             "pending_command": "",
-            "normalized_command": "",
-            "actionable": False,
-            "duplicate": False,
             "confirmation_required": False,
-            "reason": "No staged command exists. Ask for a command first.",
         }
 
-    if _is_cancel_phrase(raw_text):
-        _clear_staged_backup(state)
-        _clear_fallback_staged(context_keys)
+    if _is_cancel_phrase(utterance):
         if pending_command:
-            _clear_pending_command(state)
+            _clear_pending(state)
             return {
                 "decision": "cancelled",
+                "reason": "Staged command cancelled",
                 "command_to_execute": "",
                 "pending_command": "",
-                "normalized_command": "",
-                "actionable": False,
-                "duplicate": False,
                 "confirmation_required": False,
-                "reason": "Staged command was cancelled.",
             }
-
         return {
             "decision": "noop",
+            "reason": "No staged command to cancel",
             "command_to_execute": "",
             "pending_command": "",
-            "normalized_command": "",
-            "actionable": False,
-            "duplicate": False,
             "confirmation_required": False,
-            "reason": "No staged command to cancel.",
         }
 
-    if not normalized:
-        return {
-            "decision": "noop",
-            "command_to_execute": "",
-            "pending_command": pending_command,
-            "normalized_command": "",
-            "actionable": False,
-            "duplicate": False,
-            "confidence": 0.0,
-            "confirmation_required": False,
-            "reason": "No actionable speech detected.",
-        }
-
-    has_action = _contains_action(normalized)
-    has_status_query = _contains_status_query(normalized)
-    has_vision_query = _contains_vision_query(normalized)
-    if _is_non_command_chatter(normalized):
-        if pending_command:
+    if requires_confirmation:
+        if not payload:
             return {
-                "decision": "needs_confirmation",
+                "decision": "error",
+                "reason": "requires_confirmation=true but execution_payload is empty",
                 "command_to_execute": "",
                 "pending_command": pending_command,
-                "normalized_command": normalized,
-                "actionable": False,
-                "duplicate": False,
-                "confidence": 0.0,
                 "confirmation_required": True,
                 "confirmation_phrase": "confirm",
-                "reason": "Ignored non-command speech. Still waiting for confirm or cancel.",
             }
+
+        state["pending_execution_payload"] = payload
+        state["pending_execution_ts"] = now
+
         return {
-            "decision": "noop",
+            "decision": "staged",
+            "reason": "Command staged. Wait for explicit confirm.",
             "command_to_execute": "",
-            "pending_command": "",
-            "normalized_command": normalized,
-            "actionable": False,
-            "duplicate": False,
-            "confidence": 0.0,
-            "confirmation_required": False,
-            "reason": "Ignored non-command speech.",
-        }
-
-    if not has_action and has_status_query:
-        return {
-            "decision": "execute_readonly_query",
-            "command_to_execute": normalized,
-            "pending_command": pending_command,
-            "normalized_command": normalized,
-            "actionable": True,
-            "duplicate": False,
-            "confidence": 0.7,
-            "confirmation_required": False,
-            "reason": "Read-only status query detected. Execute ROS MCP read tools without confirmation.",
-        }
-
-    if not has_action and has_vision_query:
-        return {
-            "decision": "answer_from_vision",
-            "command_to_execute": normalized,
-            "pending_command": pending_command,
-            "normalized_command": normalized,
-            "actionable": True,
-            "duplicate": False,
-            "confidence": 0.75,
-            "confirmation_required": bool(pending_command),
-            "reason": "Vision query detected. Analyze current live camera input only. Do not execute movement/action tools.",
-        }
-
-    if not has_action:
-        if pending_command:
-            return {
-                "decision": "needs_confirmation",
-                "command_to_execute": "",
-                "pending_command": pending_command,
-                "normalized_command": normalized,
-                "actionable": False,
-                "duplicate": False,
-                "confidence": 0.4,
-                "confirmation_required": True,
-                "confirmation_phrase": "confirm",
-                "reason": "No clear drone action detected. Keep pending command and wait for confirm/cancel.",
-            }
-        return {
-            "decision": "noop",
-            "command_to_execute": "",
-            "pending_command": "",
-            "normalized_command": normalized,
-            "actionable": False,
-            "duplicate": False,
-            "confidence": 0.2,
-            "confirmation_required": False,
-            "reason": "No clear drone action detected. Say a drone command first.",
-        }
-
-    last_command = str(state.get("last_normalized_command", ""))
-    last_timestamp = float(state.get("last_normalized_command_ts", 0.0) or 0.0)
-    explicit_repeat = any(pattern in raw_text.lower() for pattern in EXPLICIT_REPEAT_PATTERNS)
-
-    is_duplicate = (
-        normalized == last_command
-        and (now - last_timestamp) <= duplicate_window_sec
-        and not explicit_repeat
-    )
-
-    if pending_command and normalized == pending_command:
-        is_duplicate = True
-
-    confidence = 0.8 if has_action else 0.6
-
-    if is_duplicate:
-        return {
-            "decision": "duplicate_blocked",
-            "command_to_execute": "",
-            "pending_command": pending_command or normalized,
-            "normalized_command": normalized,
-            "actionable": False,
-            "duplicate": True,
-            "confidence": 0.95,
+            "pending_command": payload,
             "confirmation_required": True,
-            "reason": "Duplicate command detected. Waiting for an updated command or explicit confirm.",
+            "confirmation_phrase": "confirm",
+            "timeout_sec": timeout_sec,
         }
 
-    state["pending_command"] = normalized
-    state["pending_command_ts"] = now
-    state["staged_command_backup"] = normalized
-    state["staged_command_backup_ts"] = now
-    _set_fallback_staged(context_keys, normalized, now)
+    if pending_command:
+        return {
+            "decision": "passthrough",
+            "reason": "Non-motion request. A staged command still exists.",
+            "command_to_execute": "",
+            "pending_command": pending_command,
+            "confirmation_required": True,
+            "confirmation_phrase": "confirm",
+        }
 
     return {
-        "decision": "needs_confirmation",
+        "decision": "passthrough",
+        "reason": "No confirmation required",
         "command_to_execute": "",
-        "pending_command": normalized,
-        "normalized_command": normalized,
-        "actionable": False,
-        "duplicate": False,
-        "confidence": confidence,
-        "confirmation_required": True,
-        "confirmation_phrase": "confirm",
-        "reason": "Command staged. Do not execute yet. Ask user to say confirm.",
+        "pending_command": "",
+        "confirmation_required": False,
     }
+
+
+def compute_standoff_waypoint(
+    drone_x: float,
+    drone_y: float,
+    drone_z: float,
+    target_x: float,
+    target_y: float,
+    target_z: float,
+    standoff_m: float = 1.0,
+    min_altitude_m: float = 0.5,
+    max_altitude_m: float = 5.0,
+    keep_target_altitude: bool = True,
+) -> dict[str, Any]:
+    """Compute a waypoint that stops `standoff_m` before the target along line-of-sight."""
+
+    standoff = max(0.0, float(standoff_m))
+    min_alt = float(min_altitude_m)
+    max_alt = max(min_alt, float(max_altitude_m))
+
+    vx = float(target_x) - float(drone_x)
+    vy = float(target_y) - float(drone_y)
+    vz = float(target_z) - float(drone_z)
+    distance = math.sqrt(vx * vx + vy * vy + vz * vz)
+
+    if distance < 1e-6:
+        waypoint_x = float(drone_x)
+        waypoint_y = float(drone_y)
+    else:
+        travel = max(0.0, distance - standoff)
+        scale = travel / distance
+        waypoint_x = float(drone_x) + (vx * scale)
+        waypoint_y = float(drone_y) + (vy * scale)
+
+    if keep_target_altitude:
+        waypoint_z = float(target_z)
+    else:
+        waypoint_z = float(drone_z)
+
+    waypoint_z = min(max_alt, max(min_alt, waypoint_z))
+
+    remaining = math.sqrt(
+        (float(target_x) - waypoint_x) ** 2
+        + (float(target_y) - waypoint_y) ** 2
+        + (float(target_z) - waypoint_z) ** 2
+    )
+
+    return {
+        "success": True,
+        "waypoint": {
+            "x": waypoint_x,
+            "y": waypoint_y,
+            "z": waypoint_z,
+        },
+        "distance_drone_to_target_m": distance,
+        "distance_waypoint_to_target_m": remaining,
+        "requested_standoff_m": standoff,
+    }
+
 
 def _extract_prompts_block_from_yaml(raw_yaml: str) -> str:
     match = re.search(r"(?ms)^prompts:\s*\|\s*\n(.*)$", raw_yaml)
@@ -549,8 +272,8 @@ def _candidate_robot_spec_paths() -> list[Path]:
     for path in candidates:
         key = str(path)
         if key not in seen:
-            deduped.append(path)
             seen.add(key)
+            deduped.append(path)
 
     return deduped
 
@@ -571,10 +294,13 @@ def _load_robot_spec_context() -> tuple[str, str]:
 
 
 def _build_ros_mcp_toolset() -> McpToolset:
-    ros_mcp_python = os.getenv(
-        "ROS_MCP_SERVER_PYTHON", "/home/husl-ai/workspace/ros-mcp-server/venv/bin/python"
-    )
-    ros_mcp_script = os.getenv("ROS_MCP_SERVER_SCRIPT", "/home/husl-ai/workspace/ros-mcp-server/server.py")
+    ros_mcp_python = os.getenv("ROS_MCP_SERVER_PYTHON")
+    if not ros_mcp_python:
+        raise ValueError("ROS_MCP_SERVER_PYTHON environment variable is not set. Please check your .env file.")
+
+    ros_mcp_script = os.getenv("ROS_MCP_SERVER_SCRIPT")
+    if not ros_mcp_script:
+        raise ValueError("ROS_MCP_SERVER_SCRIPT environment variable is not set. Please check your .env file.")
     ros_mcp_timeout = int(os.getenv("ROS_MCP_TIMEOUT_SEC", "30"))
     ros_mcp_stderr_log = os.getenv("ROS_MCP_STDERR_LOG_PATH", "/tmp/ros_mcp_server_stderr.log")
     wrap_stderr = os.getenv("VOICE_AGENT_WRAP_ROS_MCP_STDERR", "true").lower() not in {
@@ -605,45 +331,50 @@ def _build_ros_mcp_toolset() -> McpToolset:
 
 
 BASE_AGENT_INSTRUCTION = """
-You are a real-time drone voice control agent connected to ROS MCP tools.
+You are a perception-first drone agent. Respond in ENGLISH.
 
-Always follow this exact workflow for every user turn:
-1. Call `sanitize_voice_command` with the user utterance first.
-2. Read the `decision` field from the tool response and obey it strictly.
-3. If `decision` is `needs_confirmation`, do not call ROS tools. Tell the user which command is staged and ask them to say `confirm`.
-4. If `decision` is `duplicate_blocked`, do not call ROS tools. Ask the user to update the command or say `confirm`.
-5. If `decision` is `cancelled`, acknowledge cancellation and wait for a new command.
-6. If `decision` is `execute_readonly_query`, run only read tools to answer the query (never movement/action tools).
-7. If `decision` is `answer_from_vision`, answer from live visual input only. Do not call movement/action tools.
-8. If `decision` is `execute_pending`, execute only `command_to_execute` via ROS MCP tools.
-9. Never execute movement tools unless `decision` is `execute_pending`.
-10. After tool execution, summarize what was executed and current status in <= 2 short sentences.
+Core role split:
+- Vision node (`/drone_vision/get_object_3d`) is the eye: perception only.
+- You are the brain: intent reasoning, planning, and control sequencing.
+- Always follow this order for navigation tasks: Scanning -> Planning -> Moving.
 
-Safety and UX rules:
-- Ignore filler words, stutters, and non-command chatter.
-- Always stage first, then require explicit confirmation.
-- Prefer high-level safe commands (takeoff, land, hover, rtl, move with distance/altitude).
-- For current-status questions (position, altitude, battery, pose, state), do not ask for confirm. Use read-only tools like `get_topics`, `get_topic_type`, and `subscribe_once`.
-- For camera/scene questions, respond with visual analysis only and never trigger movement/action execution.
-- For position queries on PX4, prioritize these topics in order: `/mavros/local_position/pose`, `/mavros/global_position/local`, `/mavros/global_position/global`, then similar available pose/odom topics.
-- For known PX4 actions from loaded spec, avoid extra introspection calls (for example `get_action_details`) unless a tool call fails.
-- For ROS action execution calls, always set an explicit timeout (at least 60 seconds).
-- If critical details are missing (for example altitude for takeoff), ask a brief follow-up.
-- Never invent ROS tool results.
-- Keep responses concise and spoken-language friendly.
-- Preserve user intent exactly; do not rewrite to a different action.
-- Never treat your own responses or status text as user commands.
-- Reply in English only.
+Mandatory workflow for every user turn:
+1. Decide intent with your own reasoning (do not rely on keyword regex patterns).
+2. Determine whether this turn requires confirmation:
+   - `requires_confirmation=true` for any command that can move the drone or change flight mode/state.
+   - `requires_confirmation=false` for read-only status queries or pure visual analysis.
+3. Call `confirm_gate(user_utterance, requires_confirmation, execution_payload)` exactly once.
+   - `execution_payload` must be a concise JSON object string only when `requires_confirmation=true`.
+   - Use schema like: `{\"intent\":\"fly_to_target\",\"target_query\":\"red cup\",\"standoff_m\":1.0}`.
+4. Obey gate result strictly:
+   - `staged`: do not execute ROS control tools. Ask user to say `confirm` (or `cancel`).
+   - `execute_pending`: execute only `command_to_execute`.
+   - `cancelled`: acknowledge cancellation and wait.
+   - `passthrough`: proceed with non-motion tools or response.
+   - `noop`/`error`: explain briefly and wait.
+
+Perception-first planning rules:
+- For camera-grounded navigation (e.g., move to visible target, avoid obstacle, pass through opening):
+  1) Call `/drone_vision/get_object_3d` with a precise `target_query`.
+  2) If not found or depth/transform is invalid, do not move. Ask for a better view or target phrase.
+  3) Read drone pose from `/mavros/local_position/pose`.
+  4) Call `compute_standoff_waypoint(...)` to compute a safe waypoint.
+  5) Execute `/drone_control/trajectory` with absolute coordinates.
+
+Safety:
+- Never invent tool outputs.
+- Never execute movement without `execute_pending` from `confirm_gate`.
+- If confidence/depth is weak or missing, refuse movement and explain why.
+- Keep responses concise and operational.
 """.strip()
 
 ROBOT_SPEC_CONTEXT, ROBOT_SPEC_PATH = _load_robot_spec_context()
 if ROBOT_SPEC_CONTEXT:
     logger.info("Loaded drone specification context from %s", ROBOT_SPEC_PATH)
     AGENT_INSTRUCTION = (
-        f"{BASE_AGENT_INSTRUCTION}\\n\\n"
-        "You already have robot-specific control instructions below from drone_px4.yaml. "
-        "Follow them strictly: ensure all waypoints and coordinate values are calculated based on absolute coordinates, and pay particular attention to custom action servers, RTL mode usage, and trajectory point-density rules.\\n\\n"
-        f"DRONE_SPEC_CONTEXT_START\\n{ROBOT_SPEC_CONTEXT}\\nDRONE_SPEC_CONTEXT_END"
+        f"{BASE_AGENT_INSTRUCTION}\n\n"
+        "Robot-specific execution context:\n"
+        f"DRONE_SPEC_CONTEXT_START\n{ROBOT_SPEC_CONTEXT}\nDRONE_SPEC_CONTEXT_END"
     )
 else:
     logger.warning(
@@ -658,7 +389,8 @@ root_agent = Agent(
     description="Realtime voice agent for PX4 drone control via ROS MCP server.",
     instruction=AGENT_INSTRUCTION,
     tools=[
-        FunctionTool(func=sanitize_voice_command),
+        FunctionTool(func=confirm_gate),
+        FunctionTool(func=compute_standoff_waypoint),
         _build_ros_mcp_toolset(),
     ],
 )

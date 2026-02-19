@@ -10,6 +10,7 @@ const inputTranscript = document.getElementById("inputTranscript");
 const outputTranscript = document.getElementById("outputTranscript");
 const logList = document.getElementById("log");
 const cameraPreview = document.getElementById("cameraPreview");
+const trajectoryOverlay = document.getElementById("trajectoryOverlay");
 const cameraSelect = document.getElementById("cameraSelect");
 const refreshCameraBtn = document.getElementById("refreshCameraBtn");
 
@@ -30,6 +31,7 @@ let playbackContext = null;
 let nextPlaybackTime = 0;
 const activePlaybackSources = new Set();
 let suppressMicUntilMs = 0;
+let plannedTrajectoryPoints = [];
 
 function setStatus(text, level) {
   connectionStatus.textContent = text;
@@ -53,6 +55,115 @@ function updateControlState() {
   clearAudioBtn.disabled = !connected;
   sendTextBtn.disabled = !connected;
   textInput.disabled = !connected;
+}
+
+function isFiniteNumber(value) {
+  return Number.isFinite(Number(value));
+}
+
+function normalizeTrajectoryPoints(rawPoints) {
+  if (!Array.isArray(rawPoints)) {
+    return [];
+  }
+  return rawPoints
+    .map((point) => ({
+      x: Number(point?.x),
+      y: Number(point?.y),
+      z: Number(point?.z ?? 0),
+    }))
+    .filter((point) => isFiniteNumber(point.x) && isFiniteNumber(point.y) && isFiniteNumber(point.z));
+}
+
+function resizeTrajectoryOverlay() {
+  if (!trajectoryOverlay || !cameraPreview) {
+    return;
+  }
+  const rect = cameraPreview.getBoundingClientRect();
+  const width = Math.max(2, Math.round(rect.width));
+  const height = Math.max(2, Math.round(rect.height));
+  if (trajectoryOverlay.width !== width || trajectoryOverlay.height !== height) {
+    trajectoryOverlay.width = width;
+    trajectoryOverlay.height = height;
+  }
+}
+
+function drawPlannedTrajectory() {
+  if (!trajectoryOverlay) {
+    return;
+  }
+
+  resizeTrajectoryOverlay();
+  const ctx = trajectoryOverlay.getContext("2d");
+  if (!ctx) {
+    return;
+  }
+
+  const width = trajectoryOverlay.width;
+  const height = trajectoryOverlay.height;
+  ctx.clearRect(0, 0, width, height);
+
+  if (!plannedTrajectoryPoints.length) {
+    return;
+  }
+
+  const xs = plannedTrajectoryPoints.map((point) => point.x);
+  const ys = plannedTrajectoryPoints.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+
+  const pad = 24;
+  const spanX = Math.max(1e-6, maxX - minX);
+  const spanY = Math.max(1e-6, maxY - minY);
+  const scale = Math.min((width - pad * 2) / spanX, (height - pad * 2) / spanY);
+  const centerX = (minX + maxX) * 0.5;
+  const centerY = (minY + maxY) * 0.5;
+
+  const project = (point) => ({
+    x: (point.x - centerX) * scale + width * 0.5,
+    y: height * 0.5 - (point.y - centerY) * scale,
+  });
+
+  ctx.strokeStyle = "#43a9ff";
+  ctx.lineWidth = 3;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  plannedTrajectoryPoints.forEach((point, index) => {
+    const p = project(point);
+    if (index === 0) {
+      ctx.moveTo(p.x, p.y);
+    } else {
+      ctx.lineTo(p.x, p.y);
+    }
+  });
+  ctx.stroke();
+
+  const start = project(plannedTrajectoryPoints[0]);
+  const end = project(plannedTrajectoryPoints[plannedTrajectoryPoints.length - 1]);
+
+  ctx.fillStyle = "#37d67a";
+  ctx.beginPath();
+  ctx.arc(start.x, start.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#ff5f6d";
+  ctx.beginPath();
+  ctx.arc(end.x, end.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "#e6edf7";
+  ctx.font = "12px Inter, system-ui, sans-serif";
+  ctx.fillText(`Planned trajectory (${plannedTrajectoryPoints.length} wp)`, 10, 18);
+}
+
+function setPlannedTrajectory(rawPoints) {
+  plannedTrajectoryPoints = normalizeTrajectoryPoints(rawPoints);
+  drawPlannedTrajectory();
+  if (plannedTrajectoryPoints.length) {
+    appendLog(`Planned trajectory updated: ${plannedTrajectoryPoints.length} waypoint(s)`);
+  }
 }
 
 function getWsUrl() {
@@ -269,6 +380,7 @@ function disconnectWebSocket() {
   }
 
   ws.close();
+  setPlannedTrajectory([]);
 }
 
 function handleJsonMessage(rawJson) {
@@ -284,6 +396,7 @@ function handleJsonMessage(rawJson) {
   if (type === "session_started") {
     const camera = String(message.camera_device || "").trim();
     const cameraText = camera ? `, camera=${camera}` : "";
+    setPlannedTrajectory([]);
     if (camera) {
       const hasOption = Array.from(cameraSelect.options).some((option) => option.value === camera);
       if (!hasOption) {
@@ -318,6 +431,7 @@ function handleJsonMessage(rawJson) {
     if (data) {
       cameraPreview.src = `data:${mimeType};base64,${data}`;
     }
+    drawPlannedTrajectory();
     return;
   }
 
@@ -360,6 +474,11 @@ function handleJsonMessage(rawJson) {
     const payload = JSON.stringify(message.payload ?? {});
     const compact = payload.length > 360 ? `${payload.slice(0, 360)}...` : payload;
     appendLog(`TOOL RESULT: ${name} ${compact}`);
+    return;
+  }
+
+  if (type === "planned_trajectory") {
+    setPlannedTrajectory(message.points);
     return;
   }
 
@@ -541,6 +660,14 @@ cameraSelect.addEventListener("change", () => {
 
 refreshCameraBtn.addEventListener("click", () => {
   refreshServerCameras();
+});
+
+cameraPreview.addEventListener("load", () => {
+  drawPlannedTrajectory();
+});
+
+window.addEventListener("resize", () => {
+  drawPlannedTrajectory();
 });
 
 updateControlState();

@@ -28,6 +28,7 @@ setup(
     entry_points={
         'console_scripts': [
             'bridge = drone_controller.drone_controller_node:main',
+            'object_locator = drone_controller.object_locator_node:main',
         ],
     },
 )

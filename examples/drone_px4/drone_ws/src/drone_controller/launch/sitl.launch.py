@@ -1,14 +1,10 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.actions import ExecuteProcess
+from launch.substitutions import EnvironmentVariable
+
 
 def generate_launch_description():
     return LaunchDescription([
-        # 1. Start Simulated Drone (PX4 SITL) - User usually runs this manually, but we can try?
-        # Actually standard practice is user runs 'make px4_sitl' in another term. 
-        # But we can launch MAVROS.
-        
-        # MAVROS
         Node(
             package='mavros',
             executable='mavros_node',
@@ -19,14 +15,23 @@ def generate_launch_description():
                 {'component_id': 1},
                 {'target_system_id': 1},
                 {'target_component_id': 1},
-            ]
+            ],
         ),
-        
-        # Bridge Node
         Node(
             package='drone_controller',
             executable='bridge',
             output='screen',
-            parameters=[{'use_sim_time': True}]
-        )
+            parameters=[{'use_sim_time': True}],
+        ),
+        Node(
+            package='drone_controller',
+            executable='object_locator',
+            output='screen',
+            parameters=[
+                {'camera_device': '/dev/video0'},
+                {'detector_model_id': EnvironmentVariable('DRONE_DETECTOR_MODEL_ID', default_value='yolov8s-worldv2.pt')},
+                {'depth_model_id': EnvironmentVariable('DRONE_DEPTH_MODEL_ID', default_value='depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf')},
+                {'use_sim_time': True},
+            ],
+        ),
     ])

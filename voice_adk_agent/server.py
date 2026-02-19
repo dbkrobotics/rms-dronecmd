@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import time
 import warnings
@@ -509,6 +510,89 @@ def _summarize_tool_payload(kind: str, tool_name: str, payload: Any) -> Any:
     return plain_payload
 
 
+def _to_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _point_from_mapping(value: Any) -> dict[str, float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    x = _to_float(value.get("x"))
+    y = _to_float(value.get("y"))
+    if x is None or y is None:
+        return None
+    z = _to_float(value.get("z"))
+    return {"x": x, "y": y, "z": 0.0 if z is None else z}
+
+
+def _point_list_from_sequence(value: Any) -> list[dict[str, float]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray, memoryview)):
+        return []
+    points: list[dict[str, float]] = []
+    for item in value:
+        point = _point_from_mapping(item)
+        if point is not None:
+            points.append(point)
+    return points
+
+
+def _find_trajectory_points(value: Any, depth: int = 0) -> list[dict[str, float]]:
+    if depth > 6:
+        return []
+
+    preferred_keys = ("points", "waypoints", "suggested_waypoints", "planned_points")
+
+    if isinstance(value, Mapping):
+        for key in preferred_keys:
+            candidate = value.get(key)
+            points = _point_list_from_sequence(candidate)
+            if points:
+                return points
+        for nested in value.values():
+            points = _find_trajectory_points(nested, depth + 1)
+            if points:
+                return points
+        return []
+
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
+        for nested in value:
+            points = _find_trajectory_points(nested, depth + 1)
+            if points:
+                return points
+        return []
+
+    return []
+
+
+def _extract_planned_trajectory(tool_name: str, payload: Any) -> dict[str, Any] | None:
+    plain_payload = _plain(payload)
+    points = _find_trajectory_points(plain_payload)
+    if not points:
+        return None
+
+    tool_name_lower = tool_name.lower()
+    payload_text = _compact(plain_payload).lower()
+    is_trajectory_related = (
+        "trajectory" in tool_name_lower
+        or "/drone_control/trajectory" in payload_text
+        or "suggested_waypoints" in payload_text
+    )
+
+    if not is_trajectory_related and len(points) < 2:
+        return None
+
+    return {
+        "source": tool_name,
+        "points": points[:200],
+    }
+
+
 def _extract_tool_activity_from_part(part: Any) -> list[dict[str, Any]]:
     activities: list[dict[str, Any]] = []
 
@@ -599,6 +683,19 @@ async def _emit_tool_activity(
     websocket: WebSocket, activities: list[dict[str, Any]], seen_signatures: set[str]
 ) -> None:
     for item in activities:
+        trajectory = _extract_planned_trajectory(item["name"], item["payload"])
+        if trajectory is not None:
+            trajectory_signature = f"planned_trajectory::{_compact(trajectory['points'])}"
+            if trajectory_signature not in seen_signatures:
+                seen_signatures.add(trajectory_signature)
+                await websocket.send_json(
+                    {
+                        "type": "planned_trajectory",
+                        "source": trajectory["source"],
+                        "points": trajectory["points"],
+                    }
+                )
+
         summarized_payload = _summarize_tool_payload(item["kind"], item["name"], item["payload"])
         signature = f"{item['kind']}::{item['name']}::{_compact(summarized_payload)}"
         if signature in seen_signatures:
