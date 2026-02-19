@@ -381,6 +381,8 @@ else:
     )
     AGENT_INSTRUCTION = BASE_AGENT_INSTRUCTION
 
+voice_agent_model = os.getenv("VOICE_AGENT_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
+
 root_agent = Agent(
     name="drone_voice_agent",
     model=voice_agent_model,
