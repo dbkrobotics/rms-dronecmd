@@ -84,6 +84,21 @@ CAMERA_FILTER_UNREADABLE = os.getenv("VOICE_AGENT_CAMERA_FILTER_UNREADABLE", "tr
     "false",
     "no",
 }
+CAMERA_PROBE_READABLE = os.getenv("VOICE_AGENT_CAMERA_PROBE_READABLE", "false").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+CAMERA_SET_FPS = os.getenv("VOICE_AGENT_CAMERA_SET_FPS", "false").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+CAMERA_FORCE_MJPG = os.getenv("VOICE_AGENT_CAMERA_FORCE_MJPG", "false").lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 session_service = InMemorySessionService()
 runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_service)
@@ -232,17 +247,29 @@ def _probe_camera_device(camera_device: str) -> dict[str, Any]:
 async def list_cameras() -> JSONResponse:
     raw_cameras = _discover_camera_devices()
     cameras: list[dict[str, Any]] = []
-    for item in raw_cameras:
-        camera_id = str(item.get("id", "")).strip()
-        probe = await asyncio.to_thread(_probe_camera_device, camera_id)
-        merged = {
-            "id": camera_id,
-            "label": str(item.get("label", camera_id)),
-            **probe,
-        }
-        if CAMERA_FILTER_UNREADABLE and not bool(merged.get("readable")):
-            continue
-        cameras.append(merged)
+    if CAMERA_PROBE_READABLE:
+        for item in raw_cameras:
+            camera_id = str(item.get("id", "")).strip()
+            probe = await asyncio.to_thread(_probe_camera_device, camera_id)
+            merged = {
+                "id": camera_id,
+                "label": str(item.get("label", camera_id)),
+                **probe,
+            }
+            if CAMERA_FILTER_UNREADABLE and not bool(merged.get("readable")):
+                continue
+            cameras.append(merged)
+    else:
+        for item in raw_cameras:
+            camera_id = str(item.get("id", "")).strip()
+            cameras.append(
+                {
+                    "id": camera_id,
+                    "label": str(item.get("label", camera_id)),
+                    "readable": True,
+                    "source": camera_id,
+                }
+            )
 
     if not cameras and raw_cameras:
         # Fallback for diagnostics: show all when nothing is readable.
@@ -270,6 +297,7 @@ async def list_cameras() -> JSONResponse:
             "opencv_available": bool(cv2),
             "default_camera": default_camera,
             "filter_unreadable": CAMERA_FILTER_UNREADABLE,
+            "probe_readable": CAMERA_PROBE_READABLE,
         }
     )
 
@@ -287,10 +315,10 @@ def _open_camera_capture(camera_device: str) -> tuple[Any, str]:
             source_candidates.append(int(suffix))
 
     backend_candidates: list[int | None] = []
-    if hasattr(cv2, "CAP_V4L2"):
-        backend_candidates.append(int(cv2.CAP_V4L2))
     if hasattr(cv2, "CAP_ANY"):
         backend_candidates.append(int(cv2.CAP_ANY))
+    if hasattr(cv2, "CAP_V4L2"):
+        backend_candidates.append(int(cv2.CAP_V4L2))
     if not backend_candidates:
         backend_candidates.append(None)
 
@@ -309,9 +337,13 @@ def _open_camera_capture(camera_device: str) -> tuple[Any, str]:
 
             capture.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAMERA_WIDTH))
             capture.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAMERA_HEIGHT))
-            capture.set(cv2.CAP_PROP_FPS, float(CAMERA_CAPTURE_FPS))
+            if CAMERA_SET_FPS:
+                capture.set(cv2.CAP_PROP_FPS, float(CAMERA_CAPTURE_FPS))
+            if CAMERA_FORCE_MJPG:
+                with suppress(Exception):
+                    capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
             with suppress(Exception):
-                capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             for _ in range(12):
                 ok, frame = capture.read()

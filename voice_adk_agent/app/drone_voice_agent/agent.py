@@ -364,6 +364,8 @@ Safety:
 - Never invent tool outputs.
 - Never execute movement without `execute_pending` from `confirm_gate`.
 - If confidence/depth is weak or missing, refuse movement and explain why.
+- Do not call local file/image tools (for example `analyze_previously_received_image`).
+- For visual grounding, use only `/drone_vision/get_object_3d`.
 - Keep responses concise and operational.
 """.strip()
 
