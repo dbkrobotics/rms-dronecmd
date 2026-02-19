@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import threading
 import time
 import warnings
 from collections.abc import Mapping, Sequence
@@ -16,7 +17,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from google.adk.agents.live_request_queue import LiveRequestQueue
 from google.adk.agents.run_config import RunConfig, StreamingMode
@@ -90,6 +91,15 @@ runner = Runner(app_name=APP_NAME, agent=root_agent, session_service=session_ser
 app = FastAPI(title="Drone Voice ADK Agent")
 app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
+_latest_camera_frame_lock = threading.Lock()
+_latest_camera_frame: dict[str, Any] = {
+    "data": b"",
+    "width": 0,
+    "height": 0,
+    "device": "",
+    "ts": 0.0,
+}
+
 
 @app.get("/")
 async def index() -> FileResponse:
@@ -99,6 +109,49 @@ async def index() -> FileResponse:
 @app.get("/healthz")
 async def healthz() -> JSONResponse:
     return JSONResponse({"status": "ok", "app": APP_NAME})
+
+
+def _set_latest_camera_frame(frame_bytes: bytes, width: int, height: int, device: str) -> None:
+    with _latest_camera_frame_lock:
+        _latest_camera_frame["data"] = frame_bytes
+        _latest_camera_frame["width"] = int(width)
+        _latest_camera_frame["height"] = int(height)
+        _latest_camera_frame["device"] = str(device)
+        _latest_camera_frame["ts"] = time.time()
+
+
+def _get_latest_camera_frame() -> tuple[bytes, int, int, str, float] | None:
+    with _latest_camera_frame_lock:
+        data = _latest_camera_frame.get("data", b"")
+        width = int(_latest_camera_frame.get("width", 0) or 0)
+        height = int(_latest_camera_frame.get("height", 0) or 0)
+        device = str(_latest_camera_frame.get("device", "") or "")
+        ts = float(_latest_camera_frame.get("ts", 0.0) or 0.0)
+
+    if not isinstance(data, (bytes, bytearray)) or len(data) == 0:
+        return None
+    return bytes(data), width, height, device, ts
+
+
+@app.get("/api/camera/latest.jpg")
+async def latest_camera_jpeg() -> Response:
+    latest = _get_latest_camera_frame()
+    if latest is None:
+        return Response(
+            content=b"camera frame not ready",
+            media_type="text/plain",
+            status_code=503,
+        )
+
+    frame_bytes, width, height, device, ts = latest
+    headers = {
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "X-Frame-Width": str(width),
+        "X-Frame-Height": str(height),
+        "X-Camera-Device": device,
+        "X-Frame-Timestamp": f"{ts:.6f}",
+    }
+    return Response(content=frame_bytes, media_type="image/jpeg", headers=headers)
 
 
 def _camera_source_value(camera_device: str) -> int | str:
@@ -365,6 +418,7 @@ async def _run_server_camera_stream(
                 continue
 
             frame_bytes, width, height = frame_packet
+            _set_latest_camera_frame(frame_bytes, width, height, source_label)
             now = loop.time()
 
             if now - last_model_at >= model_interval and len(frame_bytes) <= MAX_IMAGE_FRAME_BYTES:

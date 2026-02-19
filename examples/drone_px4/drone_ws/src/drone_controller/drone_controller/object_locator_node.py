@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import math
 import re
-import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -73,7 +74,8 @@ class ObjectLocatorNode(Node):
         super().__init__("object_locator")
 
         self.declare_parameter("service_name", "/drone_vision/get_object_3d")
-        self.declare_parameter("camera_device", "/dev/video0")
+        self.declare_parameter("frame_jpeg_url", "http://127.0.0.1:8787/api/camera/latest.jpg")
+        self.declare_parameter("max_remote_frame_age_sec", 1.5)
         self.declare_parameter("camera_info_topic", "/camera/camera_info")
         self.declare_parameter("local_pose_topic", "/mavros/local_position/pose")
         self.declare_parameter("default_camera_frame", "camera_link")
@@ -95,13 +97,10 @@ class ObjectLocatorNode(Node):
         self.declare_parameter("depth_patch_radius", 3)
 
         self.declare_parameter("camera_hfov_deg", 78.0)
-        self.declare_parameter("capture_width", 1280)   
-        self.declare_parameter("capture_height", 720)
-        self.declare_parameter("capture_fps", 20.0)
-        self.declare_parameter("capture_warmup_frames", 12)
 
         self.service_name = str(self.get_parameter("service_name").value)
-        self.camera_device = str(self.get_parameter("camera_device").value)
+        self.frame_jpeg_url = str(self.get_parameter("frame_jpeg_url").value).strip()
+        self.max_remote_frame_age_sec = float(self.get_parameter("max_remote_frame_age_sec").value)
         self.default_camera_frame = str(self.get_parameter("default_camera_frame").value)
         self.default_world_frame = str(self.get_parameter("default_world_frame").value)
 
@@ -121,10 +120,6 @@ class ObjectLocatorNode(Node):
         self.depth_patch_radius = int(self.get_parameter("depth_patch_radius").value)
 
         self.camera_hfov_deg = float(self.get_parameter("camera_hfov_deg").value)
-        self.capture_width = int(self.get_parameter("capture_width").value)
-        self.capture_height = int(self.get_parameter("capture_height").value)
-        self.capture_fps = float(self.get_parameter("capture_fps").value)
-        self.capture_warmup_frames = int(self.get_parameter("capture_warmup_frames").value)
 
         camera_info_topic = str(self.get_parameter("camera_info_topic").value)
         local_pose_topic = str(self.get_parameter("local_pose_topic").value)
@@ -138,8 +133,7 @@ class ObjectLocatorNode(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self._capture_lock = threading.Lock()
-        self._capture: cv2.VideoCapture | None = None
+        self._last_remote_frame_error_at = 0.0
 
         self.gemini_client = self._load_gemini_client()
         self.depth_processor, self.depth_model = self._load_depth_model()
@@ -148,7 +142,7 @@ class ObjectLocatorNode(Node):
 
         self.get_logger().info(
             "Object locator ready: "
-            f"service={self.service_name}, camera={self.camera_device}, "
+            f"service={self.service_name}, frame_source={self.frame_jpeg_url or '<unset>'}, "
             f"gemini={'on' if self.gemini_client else 'off'}, depth={'on' if self.depth_model else 'off'}"
         )
 
@@ -200,83 +194,57 @@ class ObjectLocatorNode(Node):
             self.get_logger().error(f"Failed to load depth model ({self.depth_model_id}): {exc}")
             return None, None
 
-    def _camera_sources(self) -> list[int | str]:
-        device = self.camera_device.strip()
-        if device.startswith("/dev/video"):
-            suffix = device.rsplit("video", 1)[-1]
-            if suffix.isdigit():
-                return [device, int(suffix)]
-            return [device]
-        if device.isdigit():
-            return [int(device)]
-        return [device]
-
-    def _camera_backends(self) -> list[int | None]:
-        backends: list[int | None] = []
-        if hasattr(cv2, "CAP_V4L2"):
-            backends.append(int(cv2.CAP_V4L2))
-        if hasattr(cv2, "CAP_ANY"):
-            backends.append(int(cv2.CAP_ANY))
-        if not backends:
-            backends.append(None)
-        return backends
-
-    def _open_capture(self) -> bool:
-        for source in self._camera_sources():
-            for backend in self._camera_backends():
-                try:
-                    cap = cv2.VideoCapture(source) if backend is None else cv2.VideoCapture(source, backend)
-                except Exception:
-                    continue
-
-                if not cap.isOpened():
-                    cap.release()
-                    continue
-
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self.capture_width))
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self.capture_height))
-                cap.set(cv2.CAP_PROP_FPS, float(self.capture_fps))
-                try:
-                    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-                except Exception:
-                    pass
-
-                for _ in range(max(1, self.capture_warmup_frames)):
-                    ok, frame = cap.read()
-                    if ok and frame is not None and frame.size > 0:
-                        self._capture = cap
-                        return True
-                    time.sleep(0.02)
-
-                cap.release()
-
-        return False
-
-    def _reset_capture(self) -> None:
-        if self._capture is not None:
-            self._capture.release()
-            self._capture = None
-
     def _read_frame(self) -> np.ndarray | None:
-        with self._capture_lock:
-            if self._capture is None and not self._open_capture():
-                return None
+        return self._read_remote_frame()
 
-            assert self._capture is not None
-            ok, frame = self._capture.read()
-            if ok and frame is not None and frame.size > 0:
-                return frame
+    def _warn_remote_frame_error(self, message: str) -> None:
+        now = time.time()
+        if now - self._last_remote_frame_error_at > 2.0:
+            self._last_remote_frame_error_at = now
+            self.get_logger().warn(message)
 
-            self._reset_capture()
-            if not self._open_capture():
-                return None
+    def _read_remote_frame(self) -> np.ndarray | None:
+        url = self.frame_jpeg_url
+        if not url:
+            return None
 
-            assert self._capture is not None
-            ok, frame = self._capture.read()
-            if ok and frame is not None and frame.size > 0:
-                return frame
+        request = urllib.request.Request(url, headers={"Cache-Control": "no-cache"})
+        try:
+            with urllib.request.urlopen(request, timeout=0.8) as response:
+                if int(getattr(response, "status", 200)) >= 400:
+                    self._warn_remote_frame_error(f"remote frame endpoint returned status={response.status}")
+                    return None
+                frame_bytes = response.read()
+                timestamp_header = response.headers.get("X-Frame-Timestamp")
+        except urllib.error.URLError as exc:
+            self._warn_remote_frame_error(f"remote frame fetch failed: {exc}")
+            return None
+        except Exception as exc:
+            self._warn_remote_frame_error(f"remote frame fetch failed: {exc}")
+            return None
 
-        return None
+        if not frame_bytes:
+            self._warn_remote_frame_error("remote frame endpoint returned empty body")
+            return None
+
+        if timestamp_header:
+            try:
+                frame_ts = float(timestamp_header)
+                max_age = max(0.2, self.max_remote_frame_age_sec)
+                if time.time() - frame_ts > max_age:
+                    self._warn_remote_frame_error(
+                        f"remote frame is stale: age={time.time() - frame_ts:.2f}s > {max_age:.2f}s"
+                    )
+                    return None
+            except Exception:
+                pass
+
+        array = np.frombuffer(frame_bytes, dtype=np.uint8)
+        frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
+        if frame is None or frame.size == 0:
+            self._warn_remote_frame_error("remote frame decode failed")
+            return None
+        return frame
 
     def _encode_frame_jpeg(self, frame_bgr: np.ndarray) -> bytes | None:
         ok, encoded = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
@@ -691,7 +659,7 @@ class ObjectLocatorNode(Node):
             frame = self._read_frame()
             if frame is None:
                 response.success = False
-                response.message = f"cannot read camera frame from {self.camera_device}"
+                response.message = f"cannot read camera frame from {self.frame_jpeg_url}"
                 return response
             frame_h, frame_w = frame.shape[:2]
             response.image_width = int(frame_w)
@@ -704,7 +672,7 @@ class ObjectLocatorNode(Node):
         frame, detection = sample
         if frame is None:
             response.success = False
-            response.message = f"cannot read camera frame from {self.camera_device}"
+            response.message = f"cannot read camera frame from {self.frame_jpeg_url}"
             return response
 
         frame_h, frame_w = frame.shape[:2]
@@ -758,8 +726,6 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        with node._capture_lock:
-            node._reset_capture()
         node.destroy_node()
         rclpy.shutdown()
 

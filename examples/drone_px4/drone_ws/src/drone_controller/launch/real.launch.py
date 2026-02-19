@@ -26,7 +26,7 @@ def generate_launch_description():
             executable='object_locator',
             output='screen',
             parameters=[
-                {'camera_device': '/dev/video0'},
+                {'frame_jpeg_url': EnvironmentVariable('DRONE_CAMERA_FRAME_JPEG_URL', default_value='http://127.0.0.1:8787/api/camera/latest.jpg')},
                 {'gemini_model_id': EnvironmentVariable('DRONE_GEMINI_MODEL_ID', default_value='gemini-3.1-pro-preview')},
                 {'gemini_api_version': EnvironmentVariable('DRONE_GEMINI_API_VERSION', default_value='v1')},
                 {'depth_model_id': EnvironmentVariable('DRONE_DEPTH_MODEL_ID', default_value='depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf')},

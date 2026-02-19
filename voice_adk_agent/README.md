@@ -74,6 +74,6 @@ Then:
 
 - Camera selection in UI always targets server-side `/dev/video*`, not phone cameras.
 - `object_locator` uses a separate Gemini detection model (`DRONE_GEMINI_MODEL_ID`, optional `DRONE_GEMINI_API_VERSION`) from `VOICE_AGENT_MODEL`, plus `DRONE_DEPTH_MODEL_ID`.
-- For Gemini credentials, use either `GOOGLE_API_KEY` or Vertex AI env (`GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`).
+- To avoid camera lock conflicts, set `DRONE_CAMERA_FRAME_JPEG_URL=http://127.0.0.1:8787/api/camera/latest.jpg` so `object_locator` consumes server-owned frames instead of opening `/dev/video*` again.
 - For camera-grounded movement, if object/depth/localization confidence is insufficient, the agent should refuse movement and ask for a clearer view/target.
 - Use `VOICE_AGENT_TRACE_TOOLS=true` to inspect tool call/result logs.

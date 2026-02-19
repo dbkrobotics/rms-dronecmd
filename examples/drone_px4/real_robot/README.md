@@ -71,15 +71,8 @@ export GOOGLE_API_KEY=<YOUR_GOOGLE_API_KEY>
 export DRONE_GEMINI_MODEL_ID=gemini-3.1-pro-preview
 export DRONE_GEMINI_API_VERSION=v1
 export DRONE_DEPTH_MODEL_ID=depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf
-ros2 run drone_controller object_locator --ros-args -p camera_device:=/dev/video0
-```
-
-If you route Gemini through Vertex AI instead of API key mode:
-
-```bash
-export GOOGLE_GENAI_USE_VERTEXAI=true
-export GOOGLE_CLOUD_PROJECT=<YOUR_PROJECT_ID>
-export GOOGLE_CLOUD_LOCATION=global
+export DRONE_CAMERA_FRAME_JPEG_URL=http://127.0.0.1:8787/api/camera/latest.jpg
+ros2 run drone_controller object_locator
 ```
 
 ### 4. (Optional) Launch Motion Capture Node
