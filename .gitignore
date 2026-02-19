@@ -3,3 +3,10 @@ voice_env/
 __pycache__/
 *.pyc
 *.env
+build/
+install/
+log/
+.vscode/
+.idea/
+.DS_Store
+.cache/
