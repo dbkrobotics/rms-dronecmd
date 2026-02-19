@@ -29,7 +29,8 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 {'camera_device': '/dev/video0'},
-                {'detector_model_id': EnvironmentVariable('DRONE_DETECTOR_MODEL_ID', default_value='yolov8s-worldv2.pt')},
+                {'gemini_model_id': EnvironmentVariable('DRONE_GEMINI_MODEL_ID', default_value='gemini-3.1-pro-preview')},
+                {'gemini_api_version': EnvironmentVariable('DRONE_GEMINI_API_VERSION', default_value='v1')},
                 {'depth_model_id': EnvironmentVariable('DRONE_DEPTH_MODEL_ID', default_value='depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf')},
                 {'use_sim_time': True},
             ],

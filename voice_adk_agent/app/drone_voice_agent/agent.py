@@ -382,10 +382,9 @@ else:
     )
     AGENT_INSTRUCTION = BASE_AGENT_INSTRUCTION
 
-
 root_agent = Agent(
     name="drone_voice_agent",
-    model=os.getenv("VOICE_AGENT_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
+    model=voice_agent_model,
     description="Realtime voice agent for PX4 drone control via ROS MCP server.",
     instruction=AGENT_INSTRUCTION,
     tools=[

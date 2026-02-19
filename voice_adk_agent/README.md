@@ -73,6 +73,7 @@ Then:
 ## Notes
 
 - Camera selection in UI always targets server-side `/dev/video*`, not phone cameras.
-- `object_locator` must be launched with valid model IDs (`DRONE_DETECTOR_MODEL_ID`, `DRONE_DEPTH_MODEL_ID`).
+- `object_locator` uses a separate Gemini detection model (`DRONE_GEMINI_MODEL_ID`, optional `DRONE_GEMINI_API_VERSION`) from `VOICE_AGENT_MODEL`, plus `DRONE_DEPTH_MODEL_ID`.
+- For Gemini credentials, use either `GOOGLE_API_KEY` or Vertex AI env (`GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`).
 - For camera-grounded movement, if object/depth/localization confidence is insufficient, the agent should refuse movement and ask for a clearer view/target.
 - Use `VOICE_AGENT_TRACE_TOOLS=true` to inspect tool call/result logs.

@@ -32,11 +32,11 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-### 1-1. Install Visual AI Dependencies (CPU Open-Vocabulary)
+### 1-1. Install Visual AI Dependencies (CPU Gemini + Depth)
 ```bash
 # Install in the Python environment used for drone_controller runtime
 pip install --upgrade pip
-pip install ultralytics transformers pillow torch
+pip install google-genai transformers pillow torch
 ```
 
 ### 2. Connect to Flight Controller
@@ -67,9 +67,19 @@ ros2 run drone_controller bridge
 ```bash
 # In the drone_ws folder
 source install/setup.bash
-export DRONE_DETECTOR_MODEL_ID=yolov8s-worldv2.pt
-export DRONE_DEPTH_MODEL_ID=depth-anything/Depth-Anything-V2-Small-hf
+export GOOGLE_API_KEY=<YOUR_GOOGLE_API_KEY>
+export DRONE_GEMINI_MODEL_ID=gemini-3.1-pro-preview
+export DRONE_GEMINI_API_VERSION=v1
+export DRONE_DEPTH_MODEL_ID=depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf
 ros2 run drone_controller object_locator --ros-args -p camera_device:=/dev/video0
+```
+
+If you route Gemini through Vertex AI instead of API key mode:
+
+```bash
+export GOOGLE_GENAI_USE_VERTEXAI=true
+export GOOGLE_CLOUD_PROJECT=<YOUR_PROJECT_ID>
+export GOOGLE_CLOUD_LOCATION=global
 ```
 
 ### 4. (Optional) Launch Motion Capture Node

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 import threading
 import time
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import cv2
 import numpy as np
@@ -31,9 +34,11 @@ except Exception:
     AutoModelForDepthEstimation = None
 
 try:
-    from ultralytics import YOLOWorld
+    from google import genai
+    from google.genai import types as genai_types
 except Exception:
-    YOLOWorld = None
+    genai = None
+    genai_types = None
 
 
 _STOPWORDS = {
@@ -60,8 +65,8 @@ _STOPWORDS = {
 class ObjectLocatorNode(Node):
     """Perception-only object localization node.
 
-    Inputs: target query text + camera frame.
-    Outputs: detected object location in world frame.
+    Scan: Gemini bbox detection
+    3D: monocular depth + pinhole projection + TF
     """
 
     def __init__(self) -> None:
@@ -74,20 +79,23 @@ class ObjectLocatorNode(Node):
         self.declare_parameter("default_camera_frame", "camera_link")
         self.declare_parameter("default_world_frame", "map")
 
-        self.declare_parameter("detector_model_id", "yolov8s-worldv2.pt")
-        self.declare_parameter("detector_confidence", 0.25)
-        self.declare_parameter("detector_iou", 0.45)
-        self.declare_parameter("detector_imgsz", 640)
-        self.declare_parameter("detector_max_classes", 6)
+        self.declare_parameter("gemini_model_id", "gemini-3.1-pro-preview")
+        self.declare_parameter("gemini_api_version", "v1")
+        self.declare_parameter("gemini_temperature", 0.0)
+        self.declare_parameter("gemini_max_objects", 10)
+        self.declare_parameter("gemini_retries", 2)
+        self.declare_parameter("scan_frames", 3)
+        self.declare_parameter("scan_interval_sec", 0.08)
+        self.declare_parameter("scan_iou_threshold", 0.35)
 
-        self.declare_parameter("depth_model_id", "depth-anything/Depth-Anything-V2-Small-hf")
+        self.declare_parameter("depth_model_id", "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf")
         self.declare_parameter("depth_scale", 1.0)
         self.declare_parameter("min_depth_m", 0.2)
         self.declare_parameter("max_depth_m", 40.0)
         self.declare_parameter("depth_patch_radius", 3)
 
         self.declare_parameter("camera_hfov_deg", 78.0)
-        self.declare_parameter("capture_width", 1280)
+        self.declare_parameter("capture_width", 1280)   
         self.declare_parameter("capture_height", 720)
         self.declare_parameter("capture_fps", 20.0)
         self.declare_parameter("capture_warmup_frames", 12)
@@ -97,11 +105,14 @@ class ObjectLocatorNode(Node):
         self.default_camera_frame = str(self.get_parameter("default_camera_frame").value)
         self.default_world_frame = str(self.get_parameter("default_world_frame").value)
 
-        self.detector_model_id = str(self.get_parameter("detector_model_id").value)
-        self.detector_confidence = float(self.get_parameter("detector_confidence").value)
-        self.detector_iou = float(self.get_parameter("detector_iou").value)
-        self.detector_imgsz = int(self.get_parameter("detector_imgsz").value)
-        self.detector_max_classes = int(self.get_parameter("detector_max_classes").value)
+        self.gemini_model_id = str(self.get_parameter("gemini_model_id").value)
+        self.gemini_api_version = str(self.get_parameter("gemini_api_version").value)
+        self.gemini_temperature = float(self.get_parameter("gemini_temperature").value)
+        self.gemini_max_objects = int(self.get_parameter("gemini_max_objects").value)
+        self.gemini_retries = int(self.get_parameter("gemini_retries").value)
+        self.scan_frames = int(self.get_parameter("scan_frames").value)
+        self.scan_interval_sec = float(self.get_parameter("scan_interval_sec").value)
+        self.scan_iou_threshold = float(self.get_parameter("scan_iou_threshold").value)
 
         self.depth_model_id = str(self.get_parameter("depth_model_id").value)
         self.depth_scale = float(self.get_parameter("depth_scale").value)
@@ -130,7 +141,7 @@ class ObjectLocatorNode(Node):
         self._capture_lock = threading.Lock()
         self._capture: cv2.VideoCapture | None = None
 
-        self.detector = self._load_detector()
+        self.gemini_client = self._load_gemini_client()
         self.depth_processor, self.depth_model = self._load_depth_model()
 
         self.create_service(GetObject3D, self.service_name, self._handle_get_object_3d)
@@ -138,7 +149,7 @@ class ObjectLocatorNode(Node):
         self.get_logger().info(
             "Object locator ready: "
             f"service={self.service_name}, camera={self.camera_device}, "
-            f"detector={'on' if self.detector else 'off'}, depth={'on' if self.depth_model else 'off'}"
+            f"gemini={'on' if self.gemini_client else 'off'}, depth={'on' if self.depth_model else 'off'}"
         )
 
     def _camera_info_cb(self, msg: CameraInfo) -> None:
@@ -147,21 +158,26 @@ class ObjectLocatorNode(Node):
     def _local_pose_cb(self, msg: PoseStamped) -> None:
         self.latest_local_pose = msg
 
-    def _load_detector(self):
-        if not self.detector_model_id:
-            self.get_logger().error("detector_model_id is empty")
+    def _load_gemini_client(self):
+        if genai is None or genai_types is None:
+            self.get_logger().error("google-genai is unavailable. Install `google-genai`.")
             return None
 
-        if YOLOWorld is None:
-            self.get_logger().error("ultralytics YOLOWorld is unavailable. Install ultralytics.")
+        if not self.gemini_model_id:
+            self.get_logger().error("gemini_model_id is empty")
             return None
 
+        api_version = self.gemini_api_version.strip() or "v1"
         try:
-            detector = YOLOWorld(self.detector_model_id)
-            self.get_logger().info(f"Loaded detector: {self.detector_model_id}")
-            return detector
+            client = genai.Client(
+                http_options=genai_types.HttpOptions(api_version=api_version),
+            )
+            self.get_logger().info(
+                f"Gemini detector enabled: model={self.gemini_model_id}, api_version={api_version}"
+            )
+            return client
         except Exception as exc:
-            self.get_logger().error(f"Failed to load detector ({self.detector_model_id}): {exc}")
+            self.get_logger().error(f"Failed to initialize Gemini client: {exc}")
             return None
 
     def _load_depth_model(self):
@@ -262,95 +278,282 @@ class ObjectLocatorNode(Node):
 
         return None
 
-    def _query_classes(self, query: str) -> list[str]:
-        tokens = re.findall(r"[a-zA-Z0-9_]+", query.lower())
-        classes: list[str] = [query.strip().lower()]
-
-        for token in tokens:
-            if token in _STOPWORDS or len(token) < 3:
-                continue
-            classes.append(token)
-            if len(classes) >= max(1, self.detector_max_classes):
-                break
-
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for text in classes:
-            normalized = text.strip()
-            if not normalized or normalized in seen:
-                continue
-            seen.add(normalized)
-            deduped.append(normalized)
-
-        return deduped if deduped else [query.strip().lower()]
-
-    def _run_detector(
-        self,
-        frame_bgr: np.ndarray,
-        target_query: str,
-        min_confidence: float,
-    ) -> tuple[tuple[int, int, int, int], float, str] | None:
-        if self.detector is None:
+    def _encode_frame_jpeg(self, frame_bgr: np.ndarray) -> bytes | None:
+        ok, encoded = cv2.imencode(".jpg", frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        if not ok:
             return None
+        return encoded.tobytes()
 
-        classes = self._query_classes(target_query)
-        threshold = max(self.detector_confidence, float(min_confidence), 0.0)
+    def _query_tokens(self, text: str) -> set[str]:
+        return {
+            token
+            for token in re.findall(r"[a-zA-Z0-9_]+", text.lower())
+            if token and token not in _STOPWORDS and len(token) > 1
+        }
+
+    def _bbox_schema(self) -> dict[str, Any]:
+        return {
+            "type": "ARRAY",
+            "description": "Detected objects that match the user query.",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "box_2d": {
+                        "type": "ARRAY",
+                        "description": "Bounding box as [y_min, x_min, y_max, x_max], normalized to 0..1000.",
+                        "items": {"type": "INTEGER"},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                    "label": {
+                        "type": "STRING",
+                        "description": "Short label that uniquely identifies the detected object.",
+                    },
+                    "score": {
+                        "type": "NUMBER",
+                        "description": "Optional confidence in range 0..1.",
+                    },
+                },
+                "required": ["box_2d", "label"],
+            },
+        }
+
+    def _build_detection_prompt(self, target_query: str) -> str:
+        max_objects = max(1, self.gemini_max_objects)
+        return (
+            f"Find objects in the image that match this target query: '{target_query}'. "
+            f"Return at most {max_objects} detections. "
+            "If no matching object is visible, return an empty list."
+        )
+
+    def _normalize_box(self, box_raw: Sequence[Any]) -> list[int] | None:
+        if len(box_raw) != 4:
+            return None
+        values: list[int] = []
+        for value in box_raw:
+            try:
+                number = int(round(float(value)))
+            except Exception:
+                return None
+            values.append(int(np.clip(number, 0, 1000)))
+
+        y1, x1, y2, x2 = values
+        if y2 <= y1 or x2 <= x1:
+            return None
+        return [y1, x1, y2, x2]
+
+    def _parse_detection_items(self, payload: Any) -> list[dict[str, Any]]:
+        if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes, bytearray, memoryview)):
+            return []
+
+        items: list[dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, Mapping):
+                continue
+            box = self._normalize_box(item.get("box_2d") if isinstance(item.get("box_2d"), Sequence) else [])
+            if box is None:
+                continue
+            label = str(item.get("label", "")).strip()
+            if not label:
+                continue
+            score_raw = item.get("score")
+            score: float | None = None
+            if score_raw is not None:
+                try:
+                    score = float(score_raw)
+                except Exception:
+                    score = None
+            items.append({"box_2d": box, "label": label, "score": score})
+        return items
+
+    def _response_items(self, response: Any) -> list[dict[str, Any]]:
+        parsed = getattr(response, "parsed", None)
+        items = self._parse_detection_items(parsed)
+        if items:
+            return items
+
+        text = str(getattr(response, "text", "") or "").strip()
+        if not text:
+            return []
+
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"\s*```$", "", text).strip()
 
         try:
-            self.detector.set_classes(classes)
-            results = self.detector.predict(
-                source=frame_bgr,
-                conf=threshold,
-                iou=self.detector_iou,
-                imgsz=self.detector_imgsz,
-                device="cpu",
-                verbose=False,
-            )
-        except Exception as exc:
-            self.get_logger().warn(f"Detection failed: {exc}")
+            loaded = json.loads(text)
+        except Exception:
+            return []
+        return self._parse_detection_items(loaded)
+
+    def _choose_best_detection(self, target_query: str, detections: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not detections:
             return None
 
-        if not results:
+        query_tokens = self._query_tokens(target_query)
+        best_item: dict[str, Any] | None = None
+        best_score = -1.0
+
+        for item in detections:
+            label_tokens = self._query_tokens(item["label"])
+            overlap = 0.0
+            if query_tokens and label_tokens:
+                overlap = float(len(query_tokens.intersection(label_tokens))) / float(len(query_tokens))
+
+            y1, x1, y2, x2 = item["box_2d"]
+            area = float(max(1, (y2 - y1) * (x2 - x1))) / 1_000_000.0
+            model_score = item["score"] if isinstance(item["score"], float) else 0.0
+
+            total = (0.6 * overlap) + (0.3 * model_score) + (0.1 * min(area * 4.0, 1.0))
+            if total > best_score:
+                best_score = total
+                best_item = {
+                    "box_2d": item["box_2d"],
+                    "label": item["label"],
+                    "confidence": float(max(0.0, min(1.0, total))),
+                }
+
+        return best_item
+
+    def _detect_with_gemini(self, frame_bgr: np.ndarray, target_query: str, min_confidence: float) -> tuple[tuple[int, int, int, int], float, str] | None:
+        if self.gemini_client is None or genai_types is None:
             return None
 
-        result = results[0]
-        boxes = getattr(result, "boxes", None)
-        names = getattr(result, "names", {}) or {}
-        if boxes is None or len(boxes) == 0:
+        frame_bytes = self._encode_frame_jpeg(frame_bgr)
+        if not frame_bytes:
             return None
 
-        h, w = frame_bgr.shape[:2]
-        best_conf = -1.0
-        best_bbox: tuple[int, int, int, int] | None = None
-        best_label = ""
+        prompt = self._build_detection_prompt(target_query)
+        config = genai_types.GenerateContentConfig(
+            system_instruction=(
+                "Return bounding boxes as an array with labels. "
+                "Use only the provided response schema."
+            ),
+            temperature=float(max(0.0, self.gemini_temperature)),
+            response_mime_type="application/json",
+            response_schema=self._bbox_schema(),
+        )
 
-        for box in boxes:
+        attempts = max(1, self.gemini_retries)
+        for attempt in range(attempts):
             try:
-                conf = float(box.conf[0].item())
-                if conf < threshold:
-                    continue
-
-                cls_idx = int(box.cls[0].item())
-                label = str(names.get(cls_idx, classes[min(cls_idx, len(classes) - 1)]))
-
-                xyxy = box.xyxy[0].detach().cpu().numpy().astype(np.float32)
-                x1, y1, x2, y2 = [float(v) for v in xyxy]
-                bx1 = int(np.clip(round(x1), 0, w - 1))
-                by1 = int(np.clip(round(y1), 0, h - 1))
-                bx2 = int(np.clip(round(x2), bx1 + 1, w))
-                by2 = int(np.clip(round(y2), by1 + 1, h))
-
-                if conf > best_conf:
-                    best_conf = conf
-                    best_bbox = (bx1, by1, bx2 - bx1, by2 - by1)
-                    best_label = label
-            except Exception:
+                response = self.gemini_client.models.generate_content(
+                    model=self.gemini_model_id,
+                    contents=[
+                        prompt,
+                        genai_types.Part.from_bytes(data=frame_bytes, mime_type="image/jpeg"),
+                    ],
+                    config=config,
+                )
+            except Exception as exc:
+                self.get_logger().warn(f"Gemini detection failed (attempt {attempt + 1}/{attempts}): {exc}")
                 continue
 
-        if best_bbox is None:
-            return None
+            items = self._response_items(response)
+            best = self._choose_best_detection(target_query, items)
+            if best is None:
+                continue
 
-        return best_bbox, float(best_conf), best_label
+            confidence = float(best["confidence"])
+            if confidence < max(0.0, float(min_confidence)):
+                continue
+
+            y1, x1, y2, x2 = best["box_2d"]
+            h, w = frame_bgr.shape[:2]
+            bx1 = int(np.clip(round((x1 / 1000.0) * w), 0, w - 1))
+            by1 = int(np.clip(round((y1 / 1000.0) * h), 0, h - 1))
+            bx2 = int(np.clip(round((x2 / 1000.0) * w), bx1 + 1, w))
+            by2 = int(np.clip(round((y2 / 1000.0) * h), by1 + 1, h))
+
+            bbox = (bx1, by1, bx2 - bx1, by2 - by1)
+            return bbox, confidence, best["label"]
+
+        return None
+
+    def _bbox_iou(self, a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+        ax1, ay1, aw, ah = a
+        bx1, by1, bw, bh = b
+        ax2, ay2 = ax1 + aw, ay1 + ah
+        bx2, by2 = bx1 + bw, by1 + bh
+
+        ix1 = max(ax1, bx1)
+        iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2)
+        iy2 = min(ay2, by2)
+        iw = max(0, ix2 - ix1)
+        ih = max(0, iy2 - iy1)
+        inter = float(iw * ih)
+        if inter <= 0.0:
+            return 0.0
+        union = float((aw * ah) + (bw * bh) - inter)
+        if union <= 0.0:
+            return 0.0
+        return inter / union
+
+    def _choose_stable_detection(
+        self,
+        samples: list[tuple[np.ndarray, tuple[tuple[int, int, int, int], float, str]]],
+    ) -> tuple[np.ndarray, tuple[tuple[int, int, int, int], float, str]] | None:
+        if not samples:
+            return None
+        if len(samples) == 1:
+            return samples[0]
+
+        threshold = float(max(0.05, min(0.95, self.scan_iou_threshold)))
+        boxes = [item[1][0] for item in samples]
+        confidences = [float(item[1][1]) for item in samples]
+
+        best_index = 0
+        best_support = -1
+        best_conf = -1.0
+        for idx, box in enumerate(boxes):
+            support = 0
+            for other in boxes:
+                if self._bbox_iou(box, other) >= threshold:
+                    support += 1
+            if support > best_support or (support == best_support and confidences[idx] > best_conf):
+                best_support = support
+                best_conf = confidences[idx]
+                best_index = idx
+
+        cluster_indices = [
+            idx
+            for idx, box in enumerate(boxes)
+            if self._bbox_iou(boxes[best_index], box) >= threshold
+        ]
+        if len(cluster_indices) <= 1:
+            return samples[best_index]
+
+        x1 = int(np.median([boxes[idx][0] for idx in cluster_indices]))
+        y1 = int(np.median([boxes[idx][1] for idx in cluster_indices]))
+        x2 = int(np.median([boxes[idx][0] + boxes[idx][2] for idx in cluster_indices]))
+        y2 = int(np.median([boxes[idx][1] + boxes[idx][3] for idx in cluster_indices]))
+        median_bbox = (x1, y1, max(1, x2 - x1), max(1, y2 - y1))
+        mean_conf = float(np.mean([confidences[idx] for idx in cluster_indices]))
+        label = samples[best_index][1][2]
+        frame = samples[best_index][0]
+        return frame, (median_bbox, mean_conf, label)
+
+    def _scan_for_target(
+        self,
+        target_query: str,
+        min_confidence: float,
+    ) -> tuple[np.ndarray, tuple[tuple[int, int, int, int], float, str]] | None:
+        frame_count = max(1, self.scan_frames)
+        pause_sec = max(0.0, self.scan_interval_sec)
+
+        samples: list[tuple[np.ndarray, tuple[tuple[int, int, int, int], float, str]]] = []
+        for index in range(frame_count):
+            frame = self._read_frame()
+            if frame is None:
+                continue
+            detection = self._detect_with_gemini(frame, target_query, min_confidence)
+            if detection is not None:
+                samples.append((frame, detection))
+            if index + 1 < frame_count and pause_sec > 0.0:
+                time.sleep(pause_sec)
+
+        return self._choose_stable_detection(samples)
 
     def _run_depth(self, frame_bgr: np.ndarray) -> np.ndarray | None:
         if self.depth_processor is None or self.depth_model is None:
@@ -472,20 +675,25 @@ class ObjectLocatorNode(Node):
             response.message = "target_query is empty"
             return response
 
-        frame = self._read_frame()
+        sample = self._scan_for_target(target_query, float(request.min_confidence))
+        if sample is None:
+            frame = self._read_frame()
+            if frame is None:
+                response.success = False
+                response.message = f"cannot read camera frame from {self.camera_device}"
+                return response
+            response.success = True
+            response.found = False
+            response.message = f"target '{target_query}' not found"
+            return response
+
+        frame, detection = sample
         if frame is None:
             response.success = False
             response.message = f"cannot read camera frame from {self.camera_device}"
             return response
 
         frame_h, frame_w = frame.shape[:2]
-        detection = self._run_detector(frame, target_query, float(request.min_confidence))
-        if detection is None:
-            response.success = True
-            response.found = False
-            response.message = f"target '{target_query}' not found"
-            return response
-
         bbox, confidence, matched_label = detection
         x, y, w, h = bbox
         u = x + (w // 2)

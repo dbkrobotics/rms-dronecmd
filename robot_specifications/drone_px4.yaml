@@ -37,7 +37,7 @@ prompts: |
 
   4. Object 3D Localization (Service: `drone_interfaces/srv/GetObject3D`)
      - Service: `/drone_vision/get_object_3d`
-     - Internal vision stack: CPU open-vocabulary detector + monocular depth + TF transform.
+     - Internal vision stack: Gemini bounding-box detection + monocular depth + TF transform.
      - Request:
        - `string target_query`
        - `float32 min_confidence`
