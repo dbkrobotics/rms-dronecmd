@@ -343,8 +343,8 @@ Mandatory workflow for every user turn:
    - `requires_confirmation=true` for any command that can move the drone or change flight mode/state.
    - `requires_confirmation=false` for read-only status queries or pure visual analysis.
 3. Call `confirm_gate(user_utterance, requires_confirmation, execution_payload)` exactly once.
-   - `execution_payload` must be a concise JSON object string only when `requires_confirmation=true`.
-   - Use schema like: `{\"intent\":\"fly_to_target\",\"target_query\":\"red cup\",\"standoff_m\":1.0}`.
+   - `execution_payload` must be a concise JSON string only when `requires_confirmation=true`.
+   - Use schema like: '{"intent": "fly_to_target", "target_query": "red cup", "standoff_m": 1.0}'.
 4. Obey gate result strictly:
    - `staged`: do not execute ROS control tools. Ask user to say `confirm` (or `cancel`).
    - `execute_pending`: execute only `command_to_execute`.

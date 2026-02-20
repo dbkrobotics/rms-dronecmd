@@ -18,15 +18,11 @@ prompts: |
 
   1. Takeoff (Action: `drone_interfaces/action/DroneTakeoff`)
      - Server: `/drone_control/takeoff`
-     - Goal: `float32 target_altitude`
+     - Goal: `{"target_altitude": float}`
 
   2. Trajectory (Action: `drone_interfaces/action/DroneTrajectory`)
      - Server: `/drone_control/trajectory`
-     - Goal:
-       - `geometry_msgs/Point[] points`
-       - `float32 speed`
-       - `float32 tolerance`
-       - `bool fly_through`
+     - Goal: `{"points": [{"x":float, "y":float, "z":float}], "speed": float, "tolerance": float, "fly_through": bool}`
      - Guidance:
        - Smooth curves/orbits: `fly_through=true`, 20+ points.
        - Cornered patrol/inspection: `fly_through=false`.
