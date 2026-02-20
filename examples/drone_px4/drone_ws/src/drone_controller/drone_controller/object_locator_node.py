@@ -80,7 +80,7 @@ class ObjectLocatorNode(Node):
         self.declare_parameter("default_camera_frame", "camera_link")
         self.declare_parameter("default_world_frame", "map")
 
-        self.declare_parameter("gemini_model_id", "gemini-3-flash-preview")
+        self.declare_parameter("gemini_model_id", "gemini-flash-latest")
         self.declare_parameter("gemini_api_version", "v1beta")
         self.declare_parameter("gemini_temperature", 0.0)
         self.declare_parameter("gemini_max_objects", 10)

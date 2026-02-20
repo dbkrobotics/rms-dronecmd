@@ -44,7 +44,7 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 {'frame_jpeg_url': EnvironmentVariable('VISION_CAMERA_FRAME_JPEG_URL', default_value='http://127.0.0.1:8787/api/camera/latest.jpg')},
-                {'gemini_model_id': EnvironmentVariable('VISION_GEMINI_MODEL_ID', default_value='gemini-3-flash-preview')},
+                {'gemini_model_id': EnvironmentVariable('VISION_GEMINI_MODEL_ID', default_value='gemini-flash-latest')},
                 {'gemini_api_version': EnvironmentVariable('VISION_GEMINI_API_VERSION', default_value='v1beta')},
                 {'depth_model_id': EnvironmentVariable('VISION_DEPTH_MODEL_ID', default_value='depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf')},
                 {'use_sim_time': True},
