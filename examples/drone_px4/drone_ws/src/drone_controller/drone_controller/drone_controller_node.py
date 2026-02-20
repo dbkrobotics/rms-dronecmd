@@ -89,43 +89,38 @@ class DroneMCPBridge(Node):
         self.target_pose.header.frame_id = "map"
         self.local_pos_pub.publish(self.target_pose)
 
-    async def prepare_for_flight(self) -> tuple[bool, str]:
+    async def prepare_for_flight(self):
         if not self.current_state.connected:
-            reason = "FCU not connected"
-            self.get_logger().error(reason)
-            return False, reason
+            self.get_logger().error("FCU not connected!")
+            return False
 
         if not self.is_primed:
-            reason = "Waiting for local position lock"
-            self.get_logger().warn(reason)
-            return False, reason
+            self.get_logger().warn("Waiting for local position lock...")
+            return False
 
         if self.current_state.mode != "OFFBOARD":
             req = SetMode.Request(custom_mode="OFFBOARD")
             resp = await self.mode_cli.call_async(req)
             if not resp.mode_sent:
-                reason = f"Failed to set OFFBOARD mode (current_mode={self.current_state.mode})"
-                self.get_logger().error(reason)
-                return False, reason
+                self.get_logger().error("Failed to set OFFBOARD mode")
+                return False
             time.sleep(0.5)
 
         if not self.current_state.armed:
             req = CommandBool.Request(value=True)
             resp = await self.arm_cli.call_async(req)
             if not resp.success:
-                reason = f"Failed to ARM (current_mode={self.current_state.mode})"
-                self.get_logger().error(reason)
-                return False, reason
+                self.get_logger().error("Failed to ARM")
+                return False
 
-        return True, ""
+        return True
 
     async def execute_takeoff(self, goal_handle):
         self.get_logger().info(f"Executing Takeoff to {goal_handle.request.target_altitude}m")
 
-        is_ready, reason = await self.prepare_for_flight()
-        if not is_ready:
+        if not await self.prepare_for_flight():
             goal_handle.abort()
-            return DroneTakeoff.Result(success=False, message=reason or "Failed to arm/offboard")
+            return DroneTakeoff.Result(success=False, message="Failed to arm/offboard")
 
         self.active_pattern = None
         self.target_pose.pose.position.x = self.current_pose.pose.position.x
@@ -159,10 +154,9 @@ class DroneMCPBridge(Node):
             f"Executing Trajectory with {len(req.points)} points. FlyThrough={req.fly_through}"
         )
 
-        is_ready, reason = await self.prepare_for_flight()
-        if not is_ready:
+        if not await self.prepare_for_flight():
             goal_handle.abort()
-            return DroneTrajectory.Result(success=False, message=reason or "Failed to arm/offboard")
+            return DroneTrajectory.Result(success=False, message="Failed to arm/offboard")
 
         self.active_pattern = None
 
