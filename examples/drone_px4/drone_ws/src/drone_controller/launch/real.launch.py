@@ -12,7 +12,7 @@ def generate_launch_description():
             parameters=[
                 {'fcu_url': '/dev/ttyUSB0:57600'},
                 {'system_id': 1},
-                {'component_id': 1},
+                {'component_id': 240},
             ],
         ),
         Node(
