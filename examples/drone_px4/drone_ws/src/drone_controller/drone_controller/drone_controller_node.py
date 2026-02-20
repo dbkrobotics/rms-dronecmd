@@ -9,7 +9,7 @@ from scipy.spatial.transform import Rotation as R
 
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State
-from mavros_msgs.srv import CommandBool, SetMode
+from mavros_msgs.srv import SetMode, CommandLong
 
 from drone_interfaces.action import DroneTakeoff, DroneTrajectory
 
@@ -28,7 +28,7 @@ class DroneMCPBridge(Node):
         self.state_sub = self.create_subscription(State, '/mavros/state', self.state_cb, 10)
         self.local_pos_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self.local_cb, qos_profile_sensor_data)
 
-        self.arm_cli = self.create_client(CommandBool, '/mavros/cmd/arming', callback_group=self.callback_group)
+        self.arm_cli = self.create_client(CommandLong, '/mavros/cmd/command', callback_group=self.callback_group)
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode', callback_group=self.callback_group)
 
         self._action_takeoff = ActionServer(
@@ -80,35 +80,46 @@ class DroneMCPBridge(Node):
             self.get_logger().warn("Waiting for local position lock...")
             return False
 
-        if not self.current_state.armed:
-            req = CommandBool.Request(value=True)
-            resp = await self.arm_cli.call_async(req)
-            if not resp.success:
-                self.get_logger().error("Failed to ARM")
-                return False
-            time.sleep(0.5)
-
         if self.current_state.mode != "OFFBOARD":
             req = SetMode.Request(custom_mode="OFFBOARD")
             resp = await self.mode_cli.call_async(req)
             if not resp.mode_sent:
                 self.get_logger().error("Failed to set OFFBOARD mode")
                 return False
-            time.sleep(0.5) 
+            await asyncio.sleep(0.5) 
 
+        if not self.current_state.armed:
+            req = CommandLong.Request(
+                broadcast=False,
+                command=400,
+                confirmation=0,
+                param1=1.0,
+                param2=21196.0,
+                param3=0.0,
+                param4=0.0,
+                param5=0.0,
+                param6=0.0,
+                param7=0.0
+            )
+            resp = await self.arm_cli.call_async(req)
+            if not resp.success:
+                self.get_logger().error("Failed to ARM (Force)")
+                return False
+            await asyncio.sleep(0.5)
+                
         return True
 
     async def execute_takeoff(self, goal_handle):
         self.get_logger().info(f'Executing Takeoff to {goal_handle.request.target_altitude}m')
         
-        if not await self.prepare_for_flight():
-            goal_handle.abort()
-            return DroneTakeoff.Result(success=False, message="Failed to arm/offboard")
-
         self.active_pattern = None
         self.target_pose.pose.position.x = self.current_pose.pose.position.x
         self.target_pose.pose.position.y = self.current_pose.pose.position.y
         self.target_pose.pose.position.z = goal_handle.request.target_altitude
+
+        if not await self.prepare_for_flight():
+            goal_handle.abort()
+            return DroneTakeoff.Result(success=False, message="Failed to arm/offboard")
 
         feedback_msg = DroneTakeoff.Feedback()
         
@@ -126,7 +137,7 @@ class DroneMCPBridge(Node):
             if error < 0.2:
                 break
                 
-            time.sleep(0.5)
+            await asyncio.sleep(0.5)
 
         goal_handle.succeed()
         return DroneTakeoff.Result(success=True, message="Takeoff complete")
@@ -137,16 +148,20 @@ class DroneMCPBridge(Node):
         req = goal_handle.request
         self.get_logger().info(f'Executing Trajectory with {len(req.points)} points. FlyThrough={req.fly_through}')
 
-        if not await self.prepare_for_flight():
-            goal_handle.abort()
-            return DroneTrajectory.Result(success=False, message="Failed to arm/offboard")
-
-        self.active_pattern = None 
-        
         # ALWAYS treat points as absolute LOCAL_NED coordinates
         points = []
         for p in req.points:
             points.append((p.x, p.y, p.z))
+
+        self.active_pattern = None 
+        if points:
+            self.target_pose.pose.position.x = float(points[0][0])
+            self.target_pose.pose.position.y = float(points[0][1])
+            self.target_pose.pose.position.z = float(points[0][2])
+
+        if not await self.prepare_for_flight():
+            goal_handle.abort()
+            return DroneTrajectory.Result(success=False, message="Failed to arm/offboard")
 
         current_global_idx = 0
         
@@ -216,10 +231,10 @@ class DroneMCPBridge(Node):
                     if setpoint_reached and drone_dist_to_wp < tolerance:
                         break 
                 
-                time.sleep(dt)
+                await asyncio.sleep(dt)
             
             if not req.fly_through:
-                time.sleep(1.0)
+                await asyncio.sleep(1.0)
             
             current_global_idx += 1
 
