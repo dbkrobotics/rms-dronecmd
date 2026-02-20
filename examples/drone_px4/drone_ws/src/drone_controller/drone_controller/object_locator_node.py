@@ -80,12 +80,12 @@ class ObjectLocatorNode(Node):
         self.declare_parameter("default_camera_frame", "camera_link")
         self.declare_parameter("default_world_frame", "map")
 
-        self.declare_parameter("gemini_model_id", "gemini-3-pro-preview")
+        self.declare_parameter("gemini_model_id", "gemini-3-flash-preview")
         self.declare_parameter("gemini_api_version", "v1beta")
         self.declare_parameter("gemini_temperature", 0.0)
         self.declare_parameter("gemini_max_objects", 10)
         self.declare_parameter("gemini_retries", 2)
-        self.declare_parameter("scan_frames", 3)
+        self.declare_parameter("scan_frames", 2)
         self.declare_parameter("scan_interval_sec", 0.08)
         self.declare_parameter("scan_iou_threshold", 0.35)
 
