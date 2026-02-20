@@ -5,11 +5,9 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy, HistoryPolicy
 
-from scipy.spatial.transform import Rotation as R
-
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State
-from mavros_msgs.srv import SetMode, CommandLong
+from mavros_msgs.srv import SetMode, CommandBool
 
 from drone_interfaces.action import DroneTakeoff, DroneTrajectory
 
@@ -28,7 +26,7 @@ class DroneMCPBridge(Node):
         self.state_sub = self.create_subscription(State, '/mavros/state', self.state_cb, 10)
         self.local_pos_sub = self.create_subscription(PoseStamped, '/mavros/local_position/pose', self.local_cb, qos_profile_sensor_data)
 
-        self.arm_cli = self.create_client(CommandLong, '/mavros/cmd/command', callback_group=self.callback_group)
+        self.arm_cli = self.create_client(CommandBool, '/mavros/cmd/arming', callback_group=self.callback_group)
         self.mode_cli = self.create_client(SetMode, '/mavros/set_mode', callback_group=self.callback_group)
 
         self._action_takeoff = ActionServer(
@@ -89,21 +87,10 @@ class DroneMCPBridge(Node):
             await asyncio.sleep(0.5) 
 
         if not self.current_state.armed:
-            req = CommandLong.Request(
-                broadcast=False,
-                command=400,
-                confirmation=0,
-                param1=1.0,
-                param2=21196.0,
-                param3=0.0,
-                param4=0.0,
-                param5=0.0,
-                param6=0.0,
-                param7=0.0
-            )
+            req = CommandBool.Request(value=True)
             resp = await self.arm_cli.call_async(req)
             if not resp.success:
-                self.get_logger().error("Failed to ARM (Force)")
+                self.get_logger().error("Failed to ARM")
                 return False
             await asyncio.sleep(0.5)
                 
