@@ -1,9 +1,23 @@
+import os
+from ament_index_python.packages import get_package_prefix
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.substitutions import EnvironmentVariable
 
 
 def generate_launch_description():
+    venv_dir = os.environ.get('VIRTUAL_ENV')
+    if venv_dir:
+        python_exec = os.path.join(venv_dir, 'bin', 'python')
+    else:
+        python_exec = 'python3'
+
+    try:
+        drone_controller_prefix = get_package_prefix('drone_controller')
+        object_locator_script = os.path.join(drone_controller_prefix, 'lib', 'drone_controller', 'object_locator')
+    except Exception:
+        object_locator_script = 'object_locator'
+
     return LaunchDescription([
         Node(
             package='mavros',
@@ -25,7 +39,8 @@ def generate_launch_description():
         ),
         Node(
             package='drone_controller',
-            executable='object_locator',
+            executable=python_exec,
+            arguments=[object_locator_script],
             output='screen',
             parameters=[
                 {'frame_jpeg_url': EnvironmentVariable('VISION_CAMERA_FRAME_JPEG_URL', default_value='http://127.0.0.1:8787/api/camera/latest.jpg')},
