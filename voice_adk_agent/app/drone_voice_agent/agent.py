@@ -355,6 +355,7 @@ Mandatory workflow for every user turn:
 Perception-first planning rules:
 - For camera-grounded navigation (e.g., move to visible target, avoid obstacle, pass through opening):
   1) Call `/drone_vision/get_object_3d` with a precise `target_query`.
+     - Send only `target_query` and `min_confidence`.
   2) If not found or depth/transform is invalid, do not move. Ask for a better view or target phrase.
   3) Read drone pose from `/mavros/local_position/pose`.
   4) Call `compute_standoff_waypoint(...)` to compute a safe waypoint.

@@ -70,7 +70,6 @@ TOOL_LOG_MAX_CHARS = int(os.getenv("VOICE_AGENT_TOOL_LOG_MAX_CHARS", "900"))
 LIVE_RETRY_COUNT = int(os.getenv("VOICE_AGENT_LIVE_RETRY_COUNT", "4"))
 LIVE_RETRY_BACKOFF_SEC = float(os.getenv("VOICE_AGENT_LIVE_RETRY_BACKOFF_SEC", "1.0"))
 MAX_IMAGE_FRAME_BYTES = int(os.getenv("VOICE_AGENT_MAX_IMAGE_FRAME_BYTES", "200000"))
-ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 CAMERA_DEVICE = "/dev/video4"
 CAMERA_WIDTH = int(os.getenv("VOICE_AGENT_CAMERA_WIDTH", "1280"))
 CAMERA_HEIGHT = int(os.getenv("VOICE_AGENT_CAMERA_HEIGHT", "720"))
@@ -91,7 +90,6 @@ _latest_camera_frame: dict[str, Any] = {
     "data": b"",
     "width": 0,
     "height": 0,
-    "device": "",
     "ts": 0.0,
 }
 
@@ -106,26 +104,24 @@ async def healthz() -> JSONResponse:
     return JSONResponse({"status": "ok", "app": APP_NAME})
 
 
-def _set_latest_camera_frame(frame_bytes: bytes, width: int, height: int, device: str) -> None:
+def _set_latest_camera_frame(frame_bytes: bytes, width: int, height: int) -> None:
     with _latest_camera_frame_lock:
         _latest_camera_frame["data"] = frame_bytes
         _latest_camera_frame["width"] = int(width)
         _latest_camera_frame["height"] = int(height)
-        _latest_camera_frame["device"] = str(device)
         _latest_camera_frame["ts"] = time.time()
 
 
-def _get_latest_camera_frame() -> tuple[bytes, int, int, str, float] | None:
+def _get_latest_camera_frame() -> tuple[bytes, int, int, float] | None:
     with _latest_camera_frame_lock:
         data = _latest_camera_frame.get("data", b"")
         width = int(_latest_camera_frame.get("width", 0) or 0)
         height = int(_latest_camera_frame.get("height", 0) or 0)
-        device = str(_latest_camera_frame.get("device", "") or "")
         ts = float(_latest_camera_frame.get("ts", 0.0) or 0.0)
 
     if not isinstance(data, (bytes, bytearray)) or len(data) == 0:
         return None
-    return bytes(data), width, height, device, ts
+    return bytes(data), width, height, ts
 
 
 @app.get("/api/camera/latest.jpg")
@@ -138,42 +134,27 @@ async def latest_camera_jpeg() -> Response:
             status_code=503,
         )
 
-    frame_bytes, width, height, device, ts = latest
+    frame_bytes, width, height, ts = latest
     headers = {
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "X-Frame-Width": str(width),
         "X-Frame-Height": str(height),
-        "X-Camera-Device": device,
+        "X-Camera-Device": CAMERA_DEVICE,
         "X-Frame-Timestamp": f"{ts:.6f}",
     }
     return Response(content=frame_bytes, media_type="image/jpeg", headers=headers)
 
 
-@app.get("/api/cameras")
-async def list_cameras() -> JSONResponse:
-    return JSONResponse(
-        {
-            "cameras": [
-                {
-                    "id": CAMERA_DEVICE,
-                    "label": f"Fixed camera ({CAMERA_DEVICE})",
-                    "readable": True,
-                    "source": CAMERA_DEVICE,
-                }
-            ],
-            "opencv_available": bool(cv2),
-            "default_camera": CAMERA_DEVICE,
-            "single_camera_only": True,
-        }
-    )
-
-
-def _open_camera_capture() -> tuple[Any, str]:
+def _open_camera_capture() -> Any:
     if cv2 is None:
         raise RuntimeError("OpenCV is not available. Install voice_adk_agent requirements first.")
 
     try:
-        capture = cv2.VideoCapture(CAMERA_DEVICE)
+        # Prefer V4L2 on Linux to open /dev/video* paths reliably.
+        capture = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
+        if not capture.isOpened():
+            capture.release()
+            capture = cv2.VideoCapture(CAMERA_DEVICE)
     except Exception as exc:
         raise RuntimeError(f"Cannot open server camera stream: {CAMERA_DEVICE} ({exc})") from exc
 
@@ -190,7 +171,7 @@ def _open_camera_capture() -> tuple[Any, str]:
     for _ in range(12):
         ok, frame = capture.read()
         if ok and frame is not None:
-            return capture, CAMERA_DEVICE
+            return capture
         time.sleep(0.03)
 
     capture.release()
@@ -241,19 +222,18 @@ async def _run_server_camera_stream(
     last_model_at = 0.0
     last_error = ""
     capture = None
-    source_label = CAMERA_DEVICE
     loop = asyncio.get_running_loop()
 
     try:
         while True:
             if capture is None:
                 try:
-                    capture, source_label = await asyncio.to_thread(_open_camera_capture)
+                    capture = await asyncio.to_thread(_open_camera_capture)
                     last_error = ""
                     await websocket.send_json(
                         {
                             "type": "camera_info",
-                            "device": source_label,
+                            "device": CAMERA_DEVICE,
                         }
                     )
                 except Exception as exc:
@@ -278,7 +258,7 @@ async def _run_server_camera_stream(
                 continue
 
             frame_bytes, width, height = frame_packet
-            _set_latest_camera_frame(frame_bytes, width, height, source_label)
+            _set_latest_camera_frame(frame_bytes, width, height)
             now = loop.time()
 
             if now - last_model_at >= model_interval and len(frame_bytes) <= MAX_IMAGE_FRAME_BYTES:
@@ -298,7 +278,7 @@ async def _run_server_camera_stream(
                         "mime_type": "image/jpeg",
                         "width": width,
                         "height": height,
-                        "device": source_label,
+                        "device": CAMERA_DEVICE,
                         "data": base64.b64encode(frame_bytes).decode("ascii"),
                     }
                 )
@@ -775,33 +755,6 @@ async def _handle_text_message(raw_message: str, live_request_queue: LiveRequest
                 )
             )
         return
-
-    if message_type == "video_frame":
-        mime_type = str(payload.get("mime_type", "image/jpeg")).strip().lower()
-        if mime_type not in ALLOWED_IMAGE_MIME_TYPES:
-            return
-
-        encoded_data = payload.get("data")
-        if not isinstance(encoded_data, str) or not encoded_data:
-            return
-
-        try:
-            frame_bytes = base64.b64decode(encoded_data, validate=True)
-        except Exception:
-            return
-
-        if not frame_bytes or len(frame_bytes) > MAX_IMAGE_FRAME_BYTES:
-            return
-
-        if mime_type == "image/jpg":
-            mime_type = "image/jpeg"
-
-        live_request_queue.send_realtime(
-            types.Blob(
-                mime_type=mime_type,
-                data=frame_bytes,
-            )
-        )
 
 
 async def _forward_event(websocket: WebSocket, event: Any, seen_tool_signatures: set[str]) -> None:

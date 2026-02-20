@@ -62,7 +62,6 @@ _STOPWORDS = {
     "towards",
 }
 
-
 class ObjectLocatorNode(Node):
     """Perception-only object localization node.
 
@@ -588,13 +587,13 @@ class ObjectLocatorNode(Node):
         y_c = ((v - cy) / fy) * depth_m
         return float(x_c), float(y_c), float(depth_m)
 
-    def _resolve_camera_frame(self, requested_frame: str) -> str:
-        requested = requested_frame.strip()
-        if requested:
-            return requested
+    def _resolve_camera_frame(self) -> str:
         if self.latest_camera_info and self.latest_camera_info.header.frame_id:
             return self.latest_camera_info.header.frame_id
         return self.default_camera_frame
+
+    def _resolve_world_frame(self) -> str:
+        return self.default_world_frame
 
     def _transform_to_world(self, camera_point: tuple[float, float, float], camera_frame: str, world_frame: str) -> Point | None:
         stamped = PointStamped()
@@ -635,7 +634,7 @@ class ObjectLocatorNode(Node):
 
     def _handle_get_object_3d(self, request: GetObject3D.Request, response: GetObject3D.Response) -> GetObject3D.Response:
         target_query = str(request.target_query or "").strip()
-        world_frame = str(request.world_frame or self.default_world_frame).strip() or self.default_world_frame
+        world_frame = self._resolve_world_frame()
         response.world_frame = world_frame
         response.found = False
         response.confidence = 0.0
@@ -703,7 +702,7 @@ class ObjectLocatorNode(Node):
         if not np.isfinite(depth_m):
             return self._fill_depth_unknown(response, "target found but depth sample is invalid")
 
-        camera_frame = self._resolve_camera_frame(str(request.camera_frame or ""))
+        camera_frame = self._resolve_camera_frame()
         x_c, y_c, z_c = self._pixel_to_camera(u, v, depth_m, frame_w, frame_h)
         world_point = self._transform_to_world((x_c, y_c, z_c), camera_frame, world_frame)
         if world_point is None:
