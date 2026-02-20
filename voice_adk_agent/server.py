@@ -391,9 +391,23 @@ def _summarize_tool_payload(kind: str, tool_name: str, payload: Any) -> Any:
         if isinstance(structured, Mapping):
             keys = sorted(structured.keys())
             summary: dict[str, Any] = {"keys": keys}
-            for key in ("action_count", "service_count", "topic_count", "node_count", "success", "message"):
+            for key in (
+                "action_count",
+                "service_count",
+                "topic_count",
+                "node_count",
+                "success",
+                "message",
+                "status",
+            ):
                 if key in structured:
                     summary[key] = structured.get(key)
+            result = structured.get("result")
+            if isinstance(result, Mapping):
+                if "success" in result:
+                    summary["result_success"] = result.get("success")
+                if "message" in result:
+                    summary["result_message"] = result.get("message")
             return {"structuredContent": summary}
         return {"structuredContent": structured}
 
