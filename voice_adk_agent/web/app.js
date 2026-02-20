@@ -11,8 +11,6 @@ const outputTranscript = document.getElementById("outputTranscript");
 const logList = document.getElementById("log");
 const cameraPreview = document.getElementById("cameraPreview");
 const trajectoryOverlay = document.getElementById("trajectoryOverlay");
-const cameraSelect = document.getElementById("cameraSelect");
-const refreshCameraBtn = document.getElementById("refreshCameraBtn");
 
 let ws = null;
 let microphoneStream = null;
@@ -261,12 +259,7 @@ function setDetectionBox(rawPayload) {
 
 function getWsUrl() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const url = new URL(`${protocol}//${window.location.host}/ws`);
-  const selectedCamera = (cameraSelect.value || "").trim();
-  if (selectedCamera) {
-    url.searchParams.set("camera_device", selectedCamera);
-  }
-  return url.toString();
+  return `${protocol}//${window.location.host}/ws`;
 }
 
 function normalizeTranscript(text) {
@@ -274,67 +267,6 @@ function normalizeTranscript(text) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
-}
-
-function populateServerCameraOptions(cameras, defaultCamera = "") {
-  const previous = cameraSelect.value;
-  cameraSelect.innerHTML = "";
-
-  if (!Array.isArray(cameras) || cameras.length === 0) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "No server camera";
-    cameraSelect.appendChild(option);
-    cameraSelect.value = "";
-    return;
-  }
-
-  cameras.forEach((camera, index) => {
-    const option = document.createElement("option");
-    option.value = String(camera.id || "");
-    const readable = camera.readable !== false;
-    const sizeText =
-      Number.isFinite(camera.width) && Number.isFinite(camera.height)
-        ? ` ${camera.width}x${camera.height}`
-        : "";
-    option.textContent = String(
-      `${camera.label || `Server camera ${index + 1}`}${sizeText}${readable ? "" : " (unreadable)"}`
-    );
-    option.disabled = !readable;
-    cameraSelect.appendChild(option);
-  });
-
-  const readableCameras = cameras.filter((camera) => camera.readable !== false);
-  const candidates = readableCameras.length ? readableCameras : cameras;
-  const preferredValue =
-    candidates.find((camera) => String(camera.id) === previous)?.id ||
-    candidates.find((camera) => String(camera.id) === defaultCamera)?.id ||
-    candidates[0].id;
-
-  cameraSelect.value = String(preferredValue || "");
-}
-
-async function refreshServerCameras() {
-  try {
-    const response = await fetch("/api/cameras", { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const payload = await response.json();
-    const cameras = Array.isArray(payload.cameras) ? payload.cameras : [];
-    populateServerCameraOptions(cameras, String(payload.default_camera || ""));
-
-    if (payload.opencv_available === false) {
-      appendLog("Server camera unavailable: OpenCV dependency missing");
-    }
-    if (payload.filter_unreadable && cameras.length === 0) {
-      appendLog("No readable server camera found");
-    }
-  } catch (error) {
-    appendLog(`Camera list load failed: ${error}`);
-    populateServerCameraOptions([], "");
-  }
 }
 
 async function ensurePlaybackContext() {
@@ -492,16 +424,6 @@ function handleJsonMessage(rawJson) {
     const cameraText = camera ? `, camera=${camera}` : "";
     setPlannedTrajectory([]);
     setDetectionBox({ found: false });
-    if (camera) {
-      const hasOption = Array.from(cameraSelect.options).some((option) => option.value === camera);
-      if (!hasOption) {
-        const option = document.createElement("option");
-        option.value = camera;
-        option.textContent = camera;
-        cameraSelect.appendChild(option);
-      }
-      cameraSelect.value = camera;
-    }
     appendLog(`Session started: ${message.session_id}${cameraText}`);
     return;
   }
@@ -509,11 +431,7 @@ function handleJsonMessage(rawJson) {
   if (type === "camera_info") {
     const device = String(message.device || "").trim();
     if (device) {
-      const switching = Boolean(message.switching);
-      if (switching) {
-        setDetectionBox({ found: false });
-      }
-      appendLog(`${switching ? "Switching server camera" : "Server camera active"}: ${device}`);
+      appendLog(`Server camera active: ${device}`);
     }
     return;
   }
@@ -754,25 +672,6 @@ textInput.addEventListener("keydown", (event) => {
   }
 });
 
-cameraSelect.addEventListener("change", () => {
-  const selectedCamera = cameraSelect.value.trim();
-  if (!selectedCamera) {
-    return;
-  }
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(
-      JSON.stringify({
-        type: "camera_select",
-        camera_device: selectedCamera,
-      })
-    );
-  }
-});
-
-refreshCameraBtn.addEventListener("click", () => {
-  refreshServerCameras();
-});
-
 cameraPreview.addEventListener("load", () => {
   drawPlannedTrajectory();
 });
@@ -783,4 +682,3 @@ window.addEventListener("resize", () => {
 
 updateControlState();
 setStatus("DISCONNECTED", "danger");
-refreshServerCameras();
