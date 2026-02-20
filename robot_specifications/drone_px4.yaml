@@ -19,10 +19,12 @@ prompts: |
   1. Takeoff (Action: `drone_interfaces/action/DroneTakeoff`)
      - Server: `/drone_control/takeoff`
      - Goal: `{"target_altitude": float}`
+     - Note: Always pass `timeout=15.0` to the `send_action_goal` tool.
 
   2. Trajectory (Action: `drone_interfaces/action/DroneTrajectory`)
      - Server: `/drone_control/trajectory`
      - Goal: `{"points": [{"x":float, "y":float, "z":float}], "speed": float, "tolerance": float, "fly_through": bool}`
+     - Note: Always pass `timeout=20.0` to the `send_action_goal` tool.
      - Guidance:
        - Smooth curves/orbits: `fly_through=true`, 20+ points.
        - Cornered patrol/inspection: `fly_through=false`.

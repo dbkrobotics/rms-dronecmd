@@ -787,13 +787,16 @@ async def _forward_event(websocket: WebSocket, event: Any, seen_tool_signatures:
 
             text_part = getattr(part, "text", None)
             if text_part:
-                await websocket.send_json(
-                    {
-                        "type": "assistant_text",
-                        "text": text_part,
-                        "partial": bool(getattr(event, "partial", False)),
-                    }
-                )
+                is_partial = bool(getattr(event, "partial", False))
+                # Only send the complete, finalized text chunk to avoid duplicate logs in the UI
+                if not is_partial:
+                    await websocket.send_json(
+                        {
+                            "type": "assistant_text",
+                            "text": text_part,
+                            "partial": False,
+                        }
+                    )
 
             inline_data = getattr(part, "inline_data", None)
             if inline_data:
