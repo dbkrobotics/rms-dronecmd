@@ -16,6 +16,7 @@ from drone_interfaces.action import DroneTakeoff, DroneTrajectory
 import math
 import time
 import threading
+import asyncio
 
 class DroneMCPBridge(Node):
     def __init__(self):
@@ -79,6 +80,14 @@ class DroneMCPBridge(Node):
             self.get_logger().warn("Waiting for local position lock...")
             return False
 
+        if not self.current_state.armed:
+            req = CommandBool.Request(value=True)
+            resp = await self.arm_cli.call_async(req)
+            if not resp.success:
+                self.get_logger().error("Failed to ARM")
+                return False
+            time.sleep(0.5)
+
         if self.current_state.mode != "OFFBOARD":
             req = SetMode.Request(custom_mode="OFFBOARD")
             resp = await self.mode_cli.call_async(req)
@@ -87,13 +96,6 @@ class DroneMCPBridge(Node):
                 return False
             time.sleep(0.5) 
 
-        if not self.current_state.armed:
-            req = CommandBool.Request(value=True)
-            resp = await self.arm_cli.call_async(req)
-            if not resp.success:
-                self.get_logger().error("Failed to ARM")
-                return False
-                
         return True
 
     async def execute_takeoff(self, goal_handle):
