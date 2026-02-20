@@ -417,12 +417,18 @@ class ObjectLocatorNode(Node):
                 continue
 
             items = self._response_items(response)
+            self.get_logger().info(f"[DEBUG] Gemini detected {len(items)} items: {items}")
+            
             best = self._choose_best_detection(target_query, items)
             if best is None:
+                self.get_logger().info(f"[DEBUG] choose_best_detection returned None for query '{target_query}'")
                 continue
 
             confidence = float(best["confidence"])
+            self.get_logger().info(f"[DEBUG] Best candidate: label='{best['label']}', box_2d={best['box_2d']}, confidence={confidence:.3f} (required >= {float(min_confidence):.3f})")
+            
             if confidence < max(0.0, float(min_confidence)):
+                self.get_logger().info(f"[DEBUG] Rejected due to low confidence.")
                 continue
 
             y1, x1, y2, x2 = best["box_2d"]
@@ -655,6 +661,7 @@ class ObjectLocatorNode(Node):
 
         sample = self._scan_for_target(target_query, float(request.min_confidence))
         if sample is None:
+            self.get_logger().info(f"[DEBUG] _scan_for_target returned None for '{target_query}'")
             frame = self._read_frame()
             if frame is None:
                 response.success = False
