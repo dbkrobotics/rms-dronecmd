@@ -50,4 +50,10 @@ def generate_launch_description():
                 {'use_sim_time': True},
             ],
         ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='camera_link_broadcaster',
+            arguments=['0.1', '0', '0', '-1.5708', '0', '-1.5708', 'base_link', 'camera_link']
+        ),
     ])
