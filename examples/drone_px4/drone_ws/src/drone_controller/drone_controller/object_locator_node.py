@@ -80,8 +80,8 @@ class ObjectLocatorNode(Node):
         self.declare_parameter("default_camera_frame", "camera_link")
         self.declare_parameter("default_world_frame", "map")
 
-        self.declare_parameter("gemini_model_id", "gemini-3.1-pro-preview")
-        self.declare_parameter("gemini_api_version", "v1")
+        self.declare_parameter("gemini_model_id", "gemini-3-pro-preview")
+        self.declare_parameter("gemini_api_version", "v1beta")
         self.declare_parameter("gemini_temperature", 0.0)
         self.declare_parameter("gemini_max_objects", 10)
         self.declare_parameter("gemini_retries", 2)
@@ -160,7 +160,7 @@ class ObjectLocatorNode(Node):
             self.get_logger().error("gemini_model_id is empty")
             return None
 
-        api_version = self.gemini_api_version.strip() or "v1"
+        api_version = self.gemini_api_version.strip() or "v1alpha"
         try:
             client = genai.Client(
                 http_options=genai_types.HttpOptions(api_version=api_version),
